@@ -1,0 +1,69 @@
+{
+  "build_identity": "rs-v1.1.0-m15-final-qa-r3",
+  "controlled_delivery_plan": {
+    "embedded_asset_location": "compliance_source/",
+    "handoff_size_cap_bytes": 536870912,
+    "retained_asset_location": "stable RangeScout project-controlled corresponding-source location linked from the public README",
+    "retained_asset_release_condition": "Release owner verifies exact size and SHA-256 and confirms the unchanged retained archive is available from the README-linked project-controlled source location; publication remains blocked if the asset cannot be produced and verified."
+  },
+  "product": "RangeScout",
+  "release_version": "1.1.0",
+  "source_assets": [
+    {
+      "components_covered": ["PySide6", "shiboken6"],
+      "filename": "pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "master_handoff_inclusion": true,
+      "provenance": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "runtime_sbom_mapping": ["PySide6", "PySide6_Essentials", "shiboken6"],
+      "sha256": "6ffd9835bb0dd2c56f061d62f1616bb1707cfc0202b80e3165d6be087f3965e2",
+      "size": 17963432,
+      "version": "6.11.1"
+    },
+    {
+      "components_covered": ["Qt Base"],
+      "filename": "qtbase-everywhere-src-6.11.1.tar.xz",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "master_handoff_inclusion": true,
+      "provenance": "https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/qtbase-everywhere-src-6.11.1.tar.xz",
+      "runtime_sbom_mapping": ["QtCore", "QtGui", "QtNetwork", "QtOpenGL", "QtWidgets", "qwindows.dll"],
+      "sha256": "d9594a31228aa23ad6b531719a29b45f0f3989fe6c136d45767ea179f233c1ac",
+      "size": 50648500,
+      "version": "6.11.1"
+    },
+    {
+      "components_covered": ["Qt Declarative"],
+      "filename": "qtdeclarative-everywhere-src-6.11.1.tar.xz",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "master_handoff_inclusion": true,
+      "provenance": "https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/qtdeclarative-everywhere-src-6.11.1.tar.xz",
+      "runtime_sbom_mapping": ["QtQml", "QtQuick"],
+      "sha256": "52e670f670b0304f534b24f98c47ceb8a41bb710464414ebc9527ec71cc86aa4",
+      "size": 38744644,
+      "version": "6.11.1"
+    },
+    {
+      "components_covered": ["Qt SVG"],
+      "filename": "qtsvg-everywhere-src-6.11.1.tar.xz",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "master_handoff_inclusion": true,
+      "provenance": "https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/qtsvg-everywhere-src-6.11.1.tar.xz",
+      "runtime_sbom_mapping": ["QtSvg"],
+      "sha256": "7f3cf02f4824bf03c2c5859ea6db173bf1482a1daf24e6cdf7bc78cfa26a8a94",
+      "size": 2336944,
+      "version": "6.11.1"
+    },
+    {
+      "components_covered": ["Qt PDF (Qt WebEngine source module)"],
+      "filename": "qtwebengine-everywhere-src-6.11.1.tar.xz",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only plus third-party licenses",
+      "master_handoff_inclusion": false,
+      "provenance": "https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/qtwebengine-everywhere-src-6.11.1.tar.xz",
+      "runtime_sbom_mapping": ["QtPdf"],
+      "sha256": "679c66ccc6c158fc215e9c58ef160331ecd29974232e345c05161889f8667083",
+      "size": 578914356,
+      "version": "6.11.1"
+    }
+  ],
+  "strategy": "stable project-controlled corresponding-source location linked from the public README"
+}

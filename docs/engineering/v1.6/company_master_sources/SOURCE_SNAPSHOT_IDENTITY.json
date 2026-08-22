@@ -1,0 +1,26 @@
+[
+  {
+    "filename": "sec_company_tickers_exchange.json",
+    "source_url": "https://www.sec.gov/files/company_tickers_exchange.json",
+    "retrieved_utc": "2026-08-21T13:27:41.6398931+00:00",
+    "duration_ms": 230.471,
+    "size_bytes": 520956,
+    "sha256": "DC94346047679508512CC7384CAA89B5A5309D7AA80309E8BB1EB22E82C6BEDD"
+  },
+  {
+    "filename": "nasdaq_nasdaqlisted.txt",
+    "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+    "retrieved_utc": "2026-08-21T13:27:20.9995480+00:00",
+    "duration_ms": 677.249,
+    "size_bytes": 347540,
+    "sha256": "B2FD1D68CAAF80458A62C88C3A3020630E98675085E601E9AABBB820E6A7D240"
+  },
+  {
+    "filename": "nasdaq_otherlisted.txt",
+    "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+    "retrieved_utc": "2026-08-21T13:27:21.6721877+00:00",
+    "duration_ms": 658.772,
+    "size_bytes": 536571,
+    "sha256": "B56266057A944866F7F74E02189030E457A0BF4AD9DF79D3CF31185B43FA7E1A"
+  }
+]

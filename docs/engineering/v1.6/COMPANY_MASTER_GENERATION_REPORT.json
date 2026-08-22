@@ -1,0 +1,137 @@
+{
+  "alias_count": 890,
+  "contains_analyst_payloads": false,
+  "contains_credentials": false,
+  "contains_market_prices": false,
+  "counts_by_asset_class": {
+    "etf": 5639,
+    "stock": 10738
+  },
+  "counts_by_exchange_venue": {
+    "Cboe BZX": 1609,
+    "NASDAQ": 5615,
+    "NYSE": 3450,
+    "NYSE American": 309,
+    "NYSE Arca": 2707,
+    "OTC": 2501,
+    "SEC associated": 186
+  },
+  "counts_by_source": {
+    "nasdaq_trader_nasdaqlisted": 5593,
+    "nasdaq_trader_otherlisted": 7540,
+    "sec_company_tickers_exchange": 10387
+  },
+  "final_unique_instrument_count": 16377,
+  "foreign_key_violations": 0,
+  "input_snapshots": [
+    {
+      "filename": "sec_company_tickers_exchange.json",
+      "input_row_count": 10387,
+      "normalized_row_count": 10387,
+      "rejected_row_count": 0,
+      "retrieved_utc": "2026-08-21T13:27:41.6398931+00:00",
+      "sha256": "DC94346047679508512CC7384CAA89B5A5309D7AA80309E8BB1EB22E82C6BEDD",
+      "size_bytes": 520956,
+      "source_id": "sec_company_tickers_exchange",
+      "source_timestamp_utc": null,
+      "source_url": "https://www.sec.gov/files/company_tickers_exchange.json",
+      "test_row_count": 0
+    },
+    {
+      "filename": "nasdaq_nasdaqlisted.txt",
+      "input_row_count": 5602,
+      "normalized_row_count": 5593,
+      "rejected_row_count": 1,
+      "retrieved_utc": "2026-08-21T13:27:20.9995480+00:00",
+      "sha256": "B2FD1D68CAAF80458A62C88C3A3020630E98675085E601E9AABBB820E6A7D240",
+      "size_bytes": 347540,
+      "source_id": "nasdaq_trader_nasdaqlisted",
+      "source_timestamp_utc": "2026-08-21T09:16:00+00:00",
+      "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+      "test_row_count": 8
+    },
+    {
+      "filename": "nasdaq_otherlisted.txt",
+      "input_row_count": 7569,
+      "normalized_row_count": 7543,
+      "rejected_row_count": 1,
+      "retrieved_utc": "2026-08-21T13:27:21.6721877+00:00",
+      "sha256": "B56266057A944866F7F74E02189030E457A0BF4AD9DF79D3CF31185B43FA7E1A",
+      "size_bytes": 536571,
+      "source_id": "nasdaq_trader_otherlisted",
+      "source_timestamp_utc": "2026-08-21T09:16:00+00:00",
+      "source_url": "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+      "test_row_count": 25
+    }
+  ],
+  "integrity_check": "ok",
+  "known_symbol_spot_checks": {
+    "AAPL": {
+      "cik": "0000320193",
+      "name": "Apple Inc. - Common Stock",
+      "present": true,
+      "venue": "NASDAQ"
+    },
+    "AMD": {
+      "cik": "0000002488",
+      "name": "Advanced Micro Devices, Inc. - Common Stock",
+      "present": true,
+      "venue": "NASDAQ"
+    },
+    "BA": {
+      "cik": "0000012927",
+      "name": "Boeing Company (The) Common Stock",
+      "present": true,
+      "venue": "NYSE"
+    },
+    "GOOGL": {
+      "cik": "0001652044",
+      "name": "Alphabet Inc. - Class A Common Stock",
+      "present": true,
+      "venue": "NASDAQ"
+    },
+    "IBM": {
+      "cik": "0000051143",
+      "name": "International Business Machines Corporation Common Stock",
+      "present": true,
+      "venue": "NYSE"
+    },
+    "JPM": {
+      "cik": "0000019617",
+      "name": "JP Morgan Chase & Co. Common Stock",
+      "present": true,
+      "venue": "NYSE"
+    },
+    "KO": {
+      "cik": "0000021344",
+      "name": "Coca-Cola Company (The) Common Stock",
+      "present": true,
+      "venue": "NYSE"
+    },
+    "MSFT": {
+      "cik": "0000789019",
+      "name": "Microsoft Corporation - Common Stock",
+      "present": true,
+      "venue": "NASDAQ"
+    },
+    "NVDA": {
+      "cik": "0001045810",
+      "name": "NVIDIA Corporation - Common Stock",
+      "present": true,
+      "venue": "NASDAQ"
+    },
+    "XOM": {
+      "cik": "0002115436",
+      "name": "ExxonMobil Holdings Corporation Common Stock",
+      "present": true,
+      "venue": "NYSE"
+    }
+  },
+  "master_path": "RangeScout_Company_Master.sqlite",
+  "master_sha256": "7A6DD392D6F63F0EAEBC6EA91355A85A8D173305DCC1B753BA42CC1090F3D9C5",
+  "master_size_bytes": 8835072,
+  "master_version": 2,
+  "parser_version": "rangescout-company-master-v2",
+  "pass": true,
+  "schema": "rangescout.company-master-generation.v2"
+}
