@@ -148,7 +148,6 @@ def _bulk_provision_empty(
     """Use set-based SQLite copies for the clean-install path; populated DBs keep the additive merge."""
     destination.execute("ATTACH DATABASE ? AS seed_master", (str(master),))
     destination.execute("PRAGMA cache_size = -65536")
-    destination.execute("PRAGMA locking_mode = EXCLUSIVE")
     destination.execute("PRAGMA synchronous = OFF")
     try:
         destination.execute("BEGIN IMMEDIATE")
