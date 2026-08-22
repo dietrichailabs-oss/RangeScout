@@ -30,7 +30,7 @@ from app.charts.prepare import prepare_chart_payload
 from app.comparisons.compare import compare_symbols
 from app.configuration.settings import ALLOWED_LIVE_REFRESH_INTERVALS_MS
 from app.configuration.settings import export_safe_settings, import_safe_settings
-from app.company_data.search import LocalInstrumentSearch
+from app.company_data.instrument_intelligence import InstrumentMatch, InstrumentResolver
 from app.application.recent_symbols import RecentSymbols
 from app.ui.presentation import directional_price, freshness_label
 from app.ui.formatting import format_financial_value
@@ -38,6 +38,7 @@ from app.market_data.fusion import previous_regular_close
 from app.ui.theme import resolve_effective_theme
 from app.exports.csv_writer import export_bars_csv
 from app.models.schemas import AlertEvent, AssetType, DataDelay, DataFreshnessState, Instrument, InstrumentIdentifier, OhlcvBar, QuoteSnapshot
+from app.market_data.contracts import AssetClass
 from app.market_calendar.us_equities import NEW_YORK, market_session_status
 from app.market_data.execution import RequestCancelled
 from app.streaming.ticker import plan_ticker_subscriptions
@@ -52,6 +53,7 @@ from app.watchlists.manager import WatchlistStore
 from app.research.caching import ResearchCache
 from app.research.fundamentals import ResearchService, SecCompanyFactsClient
 from app.research.models import ResearchSnapshot, ResearchValue
+from app.research.routing import plan_research, route_snapshot
 from app.research.analyst import AnalystResult, AnalystService, AnalystState
 from app.security.credentials import ProviderCredentials
 from app.ui.branding import load_application_icon
@@ -395,17 +397,24 @@ if QObject is not None and QRunnable is not None and Signal is not None:
                 if self.cancellation_event.is_set():
                     raise RequestCancelled("Quote request was superseded.")
                 fetch_quote = self.market_data.fetch_quote
-                parameters = inspect.signature(fetch_quote).parameters.values()
-                supports_cancellation = any(
-                    parameter.name == "cancellation_event"
-                    or parameter.kind == inspect.Parameter.VAR_KEYWORD
-                    for parameter in parameters
-                )
-                result = (
-                    fetch_quote(self.request.symbol, cancellation_event=self.cancellation_event)
-                    if supports_cancellation
-                    else fetch_quote(self.request.symbol)
-                )
+                parameters = inspect.signature(fetch_quote).parameters
+                variable = any(value.kind == inspect.Parameter.VAR_KEYWORD for value in parameters.values())
+                kwargs: dict[str, object] = {}
+                if variable or "cancellation_event" in parameters:
+                    kwargs["cancellation_event"] = self.cancellation_event
+                if variable or "canonical_instrument_id" in parameters:
+                    kwargs["canonical_instrument_id"] = (
+                        f"instrument:{self.request.instrument_id}" if self.request.instrument_id is not None
+                        else None
+                    )
+                if variable or "provider_symbols" in parameters:
+                    kwargs["provider_symbols"] = self.request.provider_symbols
+                if variable or "asset_class" in parameters:
+                    try:
+                        kwargs["asset_class"] = AssetClass(self.request.asset_class)
+                    except ValueError:
+                        pass
+                result = fetch_quote(self.request.symbol, **kwargs)
                 if self.cancellation_event.is_set():
                     raise RequestCancelled("Quote request was superseded.")
                 self.local_snapshots.save_quote(result.payload, result.metadata.provider_id)
@@ -498,7 +507,7 @@ if QObject is not None and QRunnable is not None and Signal is not None:
 
         def run(self) -> None:
             try:
-                snapshot = self.service.load(self.request.symbol, self.request.generation, self.period_mode)
+                snapshot = route_snapshot(self.service, self.request, self.period_mode)
             except Exception as exc:
                 self.signals.finished.emit(self.request, None, exc)
                 return
@@ -686,7 +695,7 @@ class RangeScoutWindow:
 
         self.watchlist_store = WatchlistStore.from_path(self.app.data_dir / "watchlists.json")
         self.note_store = NoteStore(self.app.data_dir / "notes.json")
-        self.local_instrument_search = LocalInstrumentSearch(self.app.store.path)
+        self.local_instrument_search = InstrumentResolver(self.app.store.path)
         self._selected_note_id: str | None = None
         self._active_note_category = "Research Notes"
         self._note_editor_dirty = False
@@ -2901,15 +2910,13 @@ class RangeScoutWindow:
     def _configure_recent_symbol_search(self) -> None:
         if QCompleter is None or QStringListModel is None:
             return
-        self._search_display_to_symbol: dict[str, str] = {symbol: symbol for symbol in self.recent_symbols.values}
+        self._search_display_to_instrument: dict[str, InstrumentMatch | str] = {symbol: symbol for symbol in self.recent_symbols.values}
         self._recent_symbol_model = QStringListModel(list(self.recent_symbols.values))
         self._recent_symbol_completer = QCompleter(self._recent_symbol_model, self.active_symbol_input)
         self._recent_symbol_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.active_symbol_input.setCompleter(self._recent_symbol_completer)
         self.active_symbol_input.textEdited.connect(self._on_symbol_search_edited)
-        self._recent_symbol_completer.activated.connect(
-            lambda display: self.set_active_symbol(self._search_display_to_symbol.get(str(display), str(display)), source="local-search")
-        )
+        self._recent_symbol_completer.activated.connect(self._activate_search_display)
 
     def _sync_market_provider_mode(self, _index: int = 0) -> None:
         mode = self.app.settings.provider_mode
@@ -2925,15 +2932,23 @@ class RangeScoutWindow:
         query = text.strip()
         if not query:
             values = list(self.recent_symbols.values)
-            self._search_display_to_symbol = {value: value for value in values}
+            self._search_display_to_instrument = {value: value for value in values}
+        elif len(query) < 2:
+            values = []
+            self._search_display_to_instrument = {}
         else:
             results = self.local_instrument_search.search(query)
-            self._search_display_to_symbol = {result.display_text: result.symbol for result in results}
-            values = list(self._search_display_to_symbol)
+            self._search_display_to_instrument = {result.display_text: result for result in results}
+            values = list(self._search_display_to_instrument)
         self._recent_symbol_model.setStringList(values)
         self._recent_symbol_completer.setCompletionPrefix("")
         if values:
             self._recent_symbol_completer.complete()
+
+    def _activate_search_display(self, display: object) -> None:
+        selected = self._search_display_to_instrument.get(str(display), str(display))
+        self.set_active_symbol(selected, source="instrument-search")
+
 
     def _focus_symbol_search(self) -> None:
         self.active_symbol_input.setFocus()
@@ -2991,10 +3006,13 @@ class RangeScoutWindow:
 
     def _on_global_symbol_submitted(self) -> None:
         query = self.active_symbol_input.text().strip()
-        mapped = getattr(self, "_search_display_to_symbol", {}).get(query)
-        resolved = self.local_instrument_search.resolve_unique(mapped or query)
+        mapped = getattr(self, "_search_display_to_instrument", {}).get(query)
+        if isinstance(mapped, InstrumentMatch):
+            self.set_active_symbol(mapped, source="instrument-search")
+            return
+        resolved = self.local_instrument_search.resolve_unique(str(mapped or query))
         if resolved is not None:
-            self.set_active_symbol(resolved.symbol, source="local-search")
+            self.set_active_symbol(resolved, source="instrument-search")
             return
         results = self.local_instrument_search.search(query)
         if results:
@@ -3003,8 +3021,25 @@ class RangeScoutWindow:
         else:
             self.result_text.setText("No matching instrument found")
 
-    def set_active_symbol(self, symbol: str, *, source: str, destination: QWidget | None = None) -> ActiveSymbolState:
-        state = self.active_symbol.set(symbol, source=source)
+    def set_active_symbol(self, symbol: str | InstrumentMatch, *, source: str, destination: QWidget | None = None) -> ActiveSymbolState:
+        if isinstance(symbol, InstrumentMatch):
+            item = symbol.instrument
+            state = self.active_symbol.set(
+                item.symbol, source=source, instrument_id=item.instrument_id, name=item.name,
+                venue=item.venue, asset_class=item.asset_class,
+                provider_symbols=tuple(sorted(item.provider_symbols.items())), subtype=item.subtype,
+            )
+        else:
+            if source not in {"instrument-search", "local-search", "global-search", "search", "market-search"}:
+                state = self.active_symbol.set(symbol, source=source)
+                if destination is not None:
+                    self.tabs.setCurrentWidget(destination)
+                return state
+
+            resolved = self.local_instrument_search.resolve_unique(str(symbol))
+            if resolved is not None:
+                return self.set_active_symbol(resolved, source=source, destination=destination)
+            state = self.active_symbol.set(symbol, source=source)
         if destination is not None:
             self.tabs.setCurrentWidget(destination)
         return state
@@ -3013,6 +3048,7 @@ class RangeScoutWindow:
         switch_began = perf_counter()
         self._market_range_revision += 1
         had_quote_work = bool(self._quote_tasks) or self._quote_coalesce_timer.isActive()
+        self._quote_coalesce_timer.stop()
         self._cancel_stale_quote_tasks()
         self._clear_symbol_bound_surfaces(state.symbol)
         self._remember_recent_symbol(state.symbol)
@@ -3028,19 +3064,18 @@ class RangeScoutWindow:
         if hasattr(self, "live_symbol_text"):
             self.live_symbol_text.setText(state.symbol)
         if hasattr(self, "market_company_text"):
-            self.market_company_text.setText(f"{state.symbol}  •  Company profile pending")
+            identity = state.name or "Instrument profile pending"
+            self.market_company_text.setText(f"{state.symbol}  •  {identity}  •  {state.asset_class.replace('_', ' ').title()}")
         self._set_company_logo_placeholder(state.symbol)
         snapshot = self._load_local_symbol_snapshot(state.symbol)
         if self._auto_network_refresh and hasattr(self, "runtime"):
-            if had_quote_work:
+            if had_quote_work and state.instrument_id is None:
                 self._pending_quote_selection_at = switch_began
                 self._quote_coalesce_timer.start()
             else:
                 self._pending_quote_selection_at = None
                 self._request_active_quote_refresh(
-                    source="quote-symbol-selection",
-                    selected_at=switch_began,
-                )
+                    source="quote-instrument-selection", selected_at=switch_began)
         if self._auto_network_refresh:
             self._request_active_news()
         self._request_company_logo(state.symbol, exchange=snapshot.identity.exchange)
@@ -3293,8 +3328,17 @@ class RangeScoutWindow:
             return
         request = self.active_symbol.request(source="sec-research")
         self._research_dirty = False
-        self._sec_status_message = f"SEC: loading official fundamentals for {request.symbol}…"
-        self._analyst_status_message = f"Analyst Outlook: checking secure configuration/cache for {request.symbol}…"
+        plan = plan_research(request.asset_class, request.subtype)
+        for index in range(self.research_tabs.count()):
+            self.research_tabs.setTabEnabled(index, self.research_tabs.tabText(index) in plan.visible_sections)
+        if plan.sec_applicable:
+            self._sec_status_message = f"SEC: loading eligible Research for {request.symbol}…"
+        else:
+            self._sec_status_message = f"Research: NOT APPLICABLE — {plan.message}"
+        if plan.analyst_applicable:
+            self._analyst_status_message = f"Analyst Outlook: checking secure configuration/cache for {request.symbol}…"
+        else:
+            self._analyst_status_message = f"Analyst Outlook: NOT APPLICABLE — {plan.message}"
         self._update_research_status()
         task = _ResearchTask(
             self.research_service,
@@ -3307,13 +3351,14 @@ class RangeScoutWindow:
         self._research_pending_contexts.add(context)
         self._research_dispatch_started[request.request_id] = perf_counter()
         QThreadPool.globalInstance().start(task)
-        analyst_task = _AnalystTask(self.analyst_service, request, force)
-        analyst_task.signals.finished.connect(self._on_analyst_finished)
-        self._analyst_tasks[request.request_id] = analyst_task
-        self._analyst_request_context[request.request_id] = context
-        self._analyst_pending_contexts.add(context)
-        self._analyst_dispatch_started[request.request_id] = perf_counter()
-        QThreadPool.globalInstance().start(analyst_task)
+        if plan.analyst_applicable:
+            analyst_task = _AnalystTask(self.analyst_service, request, force)
+            analyst_task.signals.finished.connect(self._on_analyst_finished)
+            self._analyst_tasks[request.request_id] = analyst_task
+            self._analyst_request_context[request.request_id] = context
+            self._analyst_pending_contexts.add(context)
+            self._analyst_dispatch_started[request.request_id] = perf_counter()
+            QThreadPool.globalInstance().start(analyst_task)
 
     def _on_research_finished(
         self,
@@ -4262,7 +4307,7 @@ class RangeScoutWindow:
             pool = QThreadPool.globalInstance()
             self._quote_pool_is_global = True
         if not self._quote_pool_is_global:
-            pool.setMaxThreadCount(2)
+            pool.setMaxThreadCount(1)
             pool.setExpiryTimeout(30_000)
         self._quote_thread_pool = pool
         return pool

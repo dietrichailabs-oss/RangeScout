@@ -13,6 +13,7 @@ from app.company_data.maintenance import CompanyMaintenanceService
 from app.company_data.scheduler import CompanyUpdateSchedule, is_update_due, next_update_at
 from app.company_logos.sources import LOGO_SOURCE_ORDER
 from app.configuration.settings import AppSettings, export_safe_settings, import_safe_settings
+from app.historical_store.migrations import CURRENT_SCHEMA_VERSION
 from app.historical_store.repository import HistoricalStore
 from app.ui.presentation import directional_price, freshness_label
 from app.ui.theme import resolve_effective_theme
@@ -34,7 +35,7 @@ def test_schema_v5_preserves_company_identity_and_adds_logo_provenance(tmp_path:
         (instrument_id, "BOE", "NYSE", "previous_symbol", now),
     )
     store._con.commit()
-    assert store._con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "7"
+    assert store._con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(CURRENT_SCHEMA_VERSION)
     columns = {row[1] for row in store._con.execute("PRAGMA table_info(rs_instruments)")}
     assert {"logo_source_id", "logo_lookup_identifier", "logo_content_sha256", "logo_license_metadata", "logo_next_refresh_utc", "logo_failure_count"} <= columns
     assert "image_bytes" not in columns

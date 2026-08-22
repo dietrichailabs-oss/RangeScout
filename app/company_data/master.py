@@ -48,6 +48,8 @@ def provision_company_master(target_database: Path | str, master_database: Path 
     with closing(sqlite3.connect(target, timeout=15)) as destination:
         destination.row_factory = sqlite3.Row
         destination.execute("PRAGMA busy_timeout = 5000")
+        destination.execute("PRAGMA synchronous = NORMAL")
+        destination.execute("PRAGMA temp_store = MEMORY")
         destination.execute("PRAGMA foreign_keys = ON")
         current_row = destination.execute(
             "SELECT value FROM rs_schema_meta WHERE key='company_master_seed_version'"
@@ -55,6 +57,9 @@ def provision_company_master(target_database: Path | str, master_database: Path 
         current = int(current_row[0]) if current_row else 0
         if current >= version:
             return CompanyMasterProvisionReport(str(master), version, len(records), 0, 0, True)
+        instrument_count = destination.execute("SELECT COUNT(*) FROM rs_instruments").fetchone()[0]
+        if instrument_count == 0:
+            return _bulk_provision_empty(destination, master, version, len(records))
         destination.execute("BEGIN IMMEDIATE")
         for row in snapshots:
             destination.execute(
@@ -132,3 +137,66 @@ def provision_company_master(target_database: Path | str, master_database: Path 
         )
         destination.commit()
     return CompanyMasterProvisionReport(str(master), version, len(records), added, aliases_added, False)
+
+
+def _bulk_provision_empty(
+    destination: sqlite3.Connection, master: Path, version: int, available: int,
+) -> CompanyMasterProvisionReport:
+    """Use set-based SQLite copies for the clean-install path; populated DBs keep the additive merge."""
+    destination.execute("ATTACH DATABASE ? AS seed_master", (str(master),))
+    try:
+        destination.execute("BEGIN IMMEDIATE")
+        destination.execute(
+            """INSERT OR IGNORE INTO rs_discovery_sources(
+               source_id,display_name,source_kind,official_url,enabled,refresh_interval_seconds,
+               last_success_utc,next_due_utc,created_at_utc,updated_at_utc)
+               SELECT source_id,source_id,'frozen_company_master_reference',source_url,1,NULL,
+                      retrieved_utc,NULL,retrieved_utc,retrieved_utc
+               FROM seed_master.source_snapshots"""
+        )
+        before = destination.total_changes
+        destination.execute(
+            """INSERT OR IGNORE INTO rs_instruments(
+               canonical_symbol,security_name,asset_class,security_type,primary_venue,mic_code,
+               currency,country_code,cik,listing_date,is_active,first_seen_utc,last_seen_utc,
+               metadata_updated_utc,created_at_utc,updated_at_utc,sector,industry,website_domain)
+               SELECT canonical_symbol,security_name,asset_class,security_type,primary_venue,mic_code,
+                      currency,country_code,cik,listing_date,is_active,source_date,source_date,
+                      source_date,source_date,source_date,sector,industry,website_domain
+               FROM seed_master.seed_instruments"""
+        )
+        added = destination.total_changes - before
+        alias_before = destination.total_changes
+        destination.execute(
+            """INSERT OR IGNORE INTO rs_instrument_aliases(
+               instrument_id,alias_symbol,venue,alias_kind,source_id,created_at_utc)
+               SELECT i.instrument_id,a.alias_symbol,a.primary_venue,a.alias_kind,
+                      'rangescout_public_master',a.source_date
+               FROM seed_master.seed_aliases a JOIN rs_instruments i
+                 ON i.canonical_symbol=a.canonical_symbol AND i.primary_venue=a.primary_venue
+                AND i.asset_class=a.asset_class"""
+        )
+        aliases_added = destination.total_changes - alias_before
+        destination.execute(
+            """INSERT OR IGNORE INTO rs_instrument_reference_sources(
+               instrument_id,source_id,source_symbol,source_name,source_exchange,
+               source_snapshot_sha256,source_retrieved_utc)
+               SELECT i.instrument_id,r.source_id,r.source_symbol,r.source_name,r.source_exchange,
+                      r.source_snapshot_sha256,s.retrieved_utc
+               FROM seed_master.seed_instrument_sources r
+               JOIN rs_instruments i ON i.canonical_symbol=r.canonical_symbol
+                    AND i.primary_venue=r.primary_venue AND i.asset_class=r.asset_class
+               JOIN seed_master.source_snapshots s ON s.source_id=r.source_id"""
+        )
+        seeded_at = destination.execute("SELECT MAX(source_date) FROM seed_master.seed_instruments").fetchone()[0]
+        destination.execute(
+            "INSERT OR REPLACE INTO rs_schema_meta(key,value,updated_at_utc) VALUES('company_master_seed_version',?,?)",
+            (str(version), seeded_at or "2026-08-21T00:00:00+00:00"),
+        )
+        destination.commit()
+    except Exception:
+        destination.rollback()
+        raise
+    finally:
+        destination.execute("DETACH DATABASE seed_master")
+    return CompanyMasterProvisionReport(str(master), version, available, added, aliases_added, False)

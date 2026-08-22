@@ -34,7 +34,7 @@ def test_request_identity_is_unique_and_bound_to_source_and_timestamp() -> None:
 
 
 def test_symbol_validation_rejects_empty_and_unsupported_characters() -> None:
-    for value in ("", "AAPL/USD", "AAPL;DROP"):
+    for value in ("", "AAPL\\USD", "AAPL;DROP"):
         try:
             normalize_symbol(value)
         except ValueError:

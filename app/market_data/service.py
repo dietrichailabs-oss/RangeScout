@@ -78,16 +78,19 @@ class FabricMarketDataService:
         symbol: str,
         *,
         asset_class: AssetClass | None = None,
+        canonical_instrument_id: str | None = None,
+        provider_symbols: tuple[tuple[str, str], ...] = (),
         cancellation_event: Event | None = None,
     ) -> ProviderResult:
         instrument = self.resolve_instrument(symbol)
         asset_class = asset_class or infer_asset_class(instrument.identifier.symbol)
         request = FabricRequest(
-            canonical_instrument_id=f"{asset_class.value}:{instrument.identifier.symbol}",
+            canonical_instrument_id=canonical_instrument_id or f"{asset_class.value}:{instrument.identifier.symbol}",
             canonical_symbol=instrument.identifier.symbol,
             asset_class=asset_class,
             capability=Capability.QUOTE,
             caller_context="production-ui",
+            provider_symbol_overrides=tuple(provider_symbols),
         )
         # A visible quote must never keep the UI waiting on a stalled provider.
         return self._provider_result(

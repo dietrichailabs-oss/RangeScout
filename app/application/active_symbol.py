@@ -13,7 +13,7 @@ def normalize_symbol(value: object) -> str:
     symbol = str(value).strip().upper()
     if not symbol:
         raise ValueError("Active Symbol cannot be empty.")
-    if len(symbol) > 20 or not all(character.isalnum() or character in {".", "-", "^"} for character in symbol):
+    if len(symbol) > 32 or not all(character.isalnum() or character in {".", "-", "^", "/"} for character in symbol):
         raise ValueError("Active Symbol contains unsupported characters.")
     return symbol
 
@@ -24,6 +24,12 @@ class ActiveSymbolState:
     generation: int
     source: str
     changed_at: datetime
+    instrument_id: int | None = None
+    name: str = ""
+    venue: str = ""
+    asset_class: str = "unknown"
+    provider_symbols: tuple[tuple[str, str], ...] = ()
+    subtype: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +40,11 @@ class SymbolRequest:
     source: str
     requested_at: datetime
 
+    instrument_id: int | None = None
+    venue: str = ""
+    asset_class: str = "unknown"
+    provider_symbols: tuple[tuple[str, str], ...] = ()
+    subtype: str = ""
 
 class ActiveSymbolController:
     """Owns the application's symbol and validates asynchronous results."""
@@ -58,17 +69,28 @@ class ActiveSymbolController:
         with self._lock:
             self._listeners.append(listener)
 
-    def set(self, symbol: object, *, source: str) -> ActiveSymbolState:
+    def set(
+        self, symbol: object, *, source: str, instrument_id: int | None = None,
+        name: str = "", venue: str = "", asset_class: str = "unknown",
+        provider_symbols: tuple[tuple[str, str], ...] = (), subtype: str = "",
+    ) -> ActiveSymbolState:
         normalized = normalize_symbol(symbol)
         source_text = str(source).strip() or "unknown"
         with self._lock:
-            if normalized == self._state.symbol:
+            same_identity = instrument_id is None or instrument_id == self._state.instrument_id
+            if normalized == self._state.symbol and same_identity:
                 return self._state
             self._state = ActiveSymbolState(
                 symbol=normalized,
                 generation=self._state.generation + 1,
                 source=source_text,
                 changed_at=datetime.now(timezone.utc),
+                instrument_id=instrument_id,
+                name=str(name),
+                venue=str(venue),
+                asset_class=str(asset_class or "unknown"),
+                provider_symbols=tuple(provider_symbols),
+                subtype=str(subtype),
             )
             state = self._state
             listeners = tuple(self._listeners)
@@ -76,7 +98,7 @@ class ActiveSymbolController:
             listener(state)
         return state
 
-    def request(self, *, source: str) -> SymbolRequest:
+    def request(self, *, source: str = "active-symbol-request") -> SymbolRequest:
         with self._lock:
             state = self._state
             return SymbolRequest(
@@ -85,9 +107,17 @@ class ActiveSymbolController:
                 request_id=next(self._request_ids),
                 source=str(source).strip() or "unknown",
                 requested_at=datetime.now(timezone.utc),
+                instrument_id=state.instrument_id,
+                venue=state.venue,
+                asset_class=state.asset_class,
+                provider_symbols=state.provider_symbols,
+                subtype=state.subtype,
             )
 
     def accepts(self, request: SymbolRequest) -> bool:
         state = self.state
         return request.symbol == state.symbol and request.generation == state.generation
 
+
+    def is_current(self, request: SymbolRequest) -> bool:
+        return self.accepts(request)

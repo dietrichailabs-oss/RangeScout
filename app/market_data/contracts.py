@@ -14,6 +14,7 @@ class AssetClass(str, Enum):
     ETF = "etf"
     ETN = "etn"
     ADR = "adr"
+    CLOSED_END_FUND = "closed_end_fund"
     PREFERRED = "preferred"
     WARRANT = "warrant"
     RIGHT = "right"
@@ -25,6 +26,7 @@ class AssetClass(str, Enum):
     OPTION = "option"
     FX = "fx"
     CRYPTO_SPOT = "crypto_spot"
+    COMMODITY_SPOT = "commodity_spot"
     CRYPTO_PERPETUAL = "crypto_perpetual"
     CRYPTO_FUTURE = "crypto_future"
     MACRO = "macro"
@@ -122,6 +124,7 @@ class FabricRequest:
     adjustment: str = "raw"
     freshness: FreshnessPolicy | None = None
     caller_context: str = "application"
+    provider_symbol_overrides: tuple[tuple[str, str], ...] = ()
     request_id: str = field(default_factory=lambda: uuid4().hex)
 
 

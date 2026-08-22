@@ -11,7 +11,7 @@
   #define AppPublisher "Dietrich AI Labs"
 #endif
 #ifndef BuildIdentity
-  #define BuildIdentity "rs-v1.6.2-ux-data-fusion-eng2"
+  #define BuildIdentity "rs-v1.6.2-instrument-intelligence-eng3"
 #endif
 #ifndef SetupBaseFilename
   #define SetupBaseFilename "RangeScout_1.6.2_Setup"

@@ -27,6 +27,7 @@ from app.company_data.repository import CompanyDatabaseRepository
 from app.company_data.maintenance import CompanyMaintenanceService
 from app.company_data.scheduler import RecurringMaintenanceScheduler
 from app.company_data.master import provision_company_master
+from app.company_data.instrument_intelligence import InstrumentReferenceSeeder
 from app.application.local_snapshot import LocalSnapshotRepository
 
 
@@ -53,6 +54,7 @@ class RangeScoutApplication:
         self.data_dir = resolved_data_dir
         self.store = HistoricalStore(self.data_dir / "history.sqlite")
         self.company_master_report = provision_company_master(self.store.path)
+        self.instrument_reference_changes = InstrumentReferenceSeeder(self.store.path).apply()
         self.local_snapshots = LocalSnapshotRepository(self.store.path)
         self.settings = self.settings if self.settings is not None else load_user_settings(str(self.data_dir))
         self.credential_store = self.credential_store or default_credential_store()

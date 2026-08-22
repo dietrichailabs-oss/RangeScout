@@ -44,13 +44,28 @@ class CatalystCorrelator:
                 # Prefer the newer official event while preserving the number of corroborating items.
                 chosen = event if event.published_at >= previous.event.published_at else previous.event
                 grouped[group_id] = CorrelatedEvent(chosen, group_id, previous.duplicate_count + 1, min(priority, previous.priority))
-        return sorted(grouped.values(), key=lambda item: (item.priority, -item.event.published_at.timestamp(), item.group_id))
+        ordered = sorted(
+            grouped.values(),
+            key=lambda item: (item.priority, _urgency_rank(item.event.urgency), -item.event.published_at.timestamp(), item.group_id),
+        )
+        limits, counts, result = {0: 12, 1: 10, 2: 6, 3: 4}, {0: 0, 1: 0, 2: 0, 3: 0}, []
+        for item in ordered:
+            if counts[item.priority] >= limits[item.priority]:
+                continue
+            counts[item.priority] += 1
+            result.append(item)
+        return result
 
 
 def _group_identity(event: CatalystEvent) -> str:
     words = sorted(set(re.findall(r"[a-z0-9]+", event.title.lower())) - {"the", "a", "an", "new", "update"})
     basis = f"{event.category}|{','.join(event.symbols)}|{' '.join(words)}"
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:20]
+
+def _urgency_rank(value: str) -> int:
+    return {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(str(value).lower(), 4)
+
+
 
 
 def _priority(event: CatalystEvent, active_symbol: str, watchlist_symbols: set[str], watched_sectors: set[str]) -> int:

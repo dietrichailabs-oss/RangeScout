@@ -58,7 +58,7 @@
 
 ## What's new in the 1.6.2 engineering candidate
 
-RangeScout 1.6.2 preserves the 1.6.1 quote-priority lane while adding offline company-name search, cleaned provider status, synchronized credentials, semantic financial formatting, normalized official catalysts and eligible Finnhub news, functional watchlist actions, human market alerts, progressive scanner rows, immediate chart-range controls, field-level previous-close fusion, and complete local Notes create/edit/reload/delete behavior. Missing provider data remains explicit and no value is fabricated.
+RangeScout 1.6.2 preserves the 1.6.1 quote-priority lane and prior 1.6.2 corrections while adding canonical market-instrument resolution, versioned capability/provider mappings, ranked disambiguating search, immediate identity-bound selection loading, instrument-type-aware Research states, and bounded catalyst relevance tiers. Missing provider data remains explicit and no value is fabricated.
 
 ## Preserved 1.6.0 provider platform
 

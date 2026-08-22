@@ -293,7 +293,14 @@ class MarketDataRouter:
         with self._lock:
             self._attempts_by_request.setdefault(request.request_id, []).append(attempt)
         try:
-            result = gate.execute(request, cancelled, attempt)
+            override = dict(request.provider_symbol_overrides).get(provider_id)
+            adapter_request = replace(request, canonical_symbol=override) if override else request
+            result = gate.execute(adapter_request, cancelled, attempt)
+            if override:
+                result = replace(
+                    result, canonical_instrument_id=request.canonical_instrument_id,
+                    canonical_symbol=request.canonical_symbol,
+                )
         except RequestCancelled:
             with self._lock:
                 attempt.update(

@@ -13,6 +13,10 @@ class Availability(str, Enum):
     AVAILABLE = "available"
     NOT_AVAILABLE = "not_available"
     STALE = "stale"
+    NOT_APPLICABLE = "not_applicable"
+    UNAVAILABLE = "unavailable"
+    PROVIDER_NOT_SUPPORTED = "provider_not_supported"
+    LOOKUP_FAILED = "lookup_failed"
     ERROR = "error"
 
 

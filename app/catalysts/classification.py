@@ -16,7 +16,9 @@ KEYWORDS = {
 def classify(event: CatalystEvent) -> CatalystEvent:
     text = f"{event.title} {event.summary or ''}".lower()
     category = next((name for name, words in KEYWORDS.items() if any(word in text for word in words)), "news")
-    urgency = "critical" if category == "halt" else "high" if category in {"sec_filing", "government_policy"} else "normal"
+    inferred = "critical" if category == "halt" else "high" if category in {"sec_filing", "government_policy"} else "normal"
+    order = {"critical": 0, "high": 1, "medium": 2, "normal": 3, "low": 4}
+    urgency = min((str(event.urgency).lower(), inferred), key=lambda value: order.get(value, 5))
     positive = any(word in text for word in ("approval", "resumed", "award", "beat", "signed"))
     negative = any(word in text for word in ("halted", "sanction", "investigation", "miss", "veto"))
     direction = "mixed" if positive and negative else "potentially positive" if positive else "potentially negative" if negative else "unclear"
