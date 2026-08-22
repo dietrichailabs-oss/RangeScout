@@ -4471,7 +4471,9 @@ class RangeScoutWindow:
         self._apply_bars_to_charts(self.current_bars)
         self._apply_history_presentation(self.current_bars, provider_name=provider_name or provider_id)
         if self.current_quote is not None and self.current_quote.instrument.identifier.symbol == request.symbol:
-            self._apply_quote_presentation(self.current_quote, refresh_collections=False)
+            # Recompute the quote presentation after history arrives so the
+            # fused previous-close fallback can use the new bars.
+            self._apply_quote_success(self.current_quote, refresh_collections=False)
         if self.current_quote is not None and self.current_quote.instrument.identifier.symbol == request.symbol:
             self._symbol_snapshot_cache[request.symbol] = (
                 self.current_quote, tuple(self.current_bars), datetime.now(timezone.utc)

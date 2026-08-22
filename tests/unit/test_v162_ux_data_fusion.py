@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 import sqlite3
 
 from app.alerts.presentation import humanize_event_code, market_event_filter
@@ -109,6 +110,13 @@ def test_previous_close_prefers_quote_then_completed_history() -> None:
     fallback = previous_regular_close(_quote(), bars)
     assert fallback.value == Decimal("100.5")
     assert fallback.source == "completed regular-session history"
+
+
+def test_history_completion_reapplies_quote_through_existing_success_path() -> None:
+    root = Path(__file__).resolve().parents[2]
+    main = (root / "app" / "ui" / "main.py").read_text(encoding="utf-8")
+    assert "self._apply_quote_success(self.current_quote, refresh_collections=False)" in main
+    assert "self._apply_quote_presentation(" not in main
 
 
 def test_notes_create_edit_reload_delete_and_restart(tmp_path) -> None:
