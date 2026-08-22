@@ -259,6 +259,12 @@ def test_automation_close_bypasses_tray_interception(monkeypatch: pytest.MonkeyP
     assert tray.calls == 0
 
 
+def test_non_intercepted_runtime_close_uses_explicit_application_exit() -> None:
+    root = Path(__file__).resolve().parents[2]
+    main = (root / "app" / "ui" / "main.py").read_text(encoding="utf-8")
+    assert "self._qt_window.runtime_close_callback = self._exit_application" in main
+
+
 def test_ui_settings_restart_probe_creates_controlled_profile_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

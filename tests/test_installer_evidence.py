@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 
 from scripts.handoff import installer_evidence
-from scripts.handoff.inno_installer_evidence import _accepted_display_name
+from scripts.handoff.inno_installer_evidence import _accepted_display_name, _inno_default_target
 
 
 def test_inno_current_user_display_name_preserves_exact_product_and_version() -> None:
@@ -12,6 +12,11 @@ def test_inno_current_user_display_name_preserves_exact_product_and_version() ->
     assert _accepted_display_name("RangeScout 1.6.2 (Current user)")
     assert not _accepted_display_name("RangeScout 1.2.0 (Current user)")
     assert not _accepted_display_name("Other 1.6.2")
+
+
+def test_inno_default_target_matches_per_user_install_location(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    assert _inno_default_target() == (tmp_path / "Local" / "Programs" / "RangeScout").resolve()
 
 
 def test_uninstall_passed_requires_zero_return_code() -> None:

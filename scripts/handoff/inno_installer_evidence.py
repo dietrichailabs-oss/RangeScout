@@ -132,6 +132,15 @@ def _accepted_display_name(value: str | None) -> bool:
     }
 
 
+def _inno_default_target() -> Path:
+    """Return Inno's per-user default target used when /DIR is omitted."""
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        raise RuntimeError("LOCALAPPDATA is required to verify the default install path")
+    return Path(local_app_data).resolve() / "Programs" / "RangeScout"
+
+
 def _shell_registration(target: Path) -> dict[str, object]:
     shortcut = (
         Path(os.environ["APPDATA"])
@@ -207,8 +216,9 @@ def collect_evidence(
     )
 
     scenarios: list[dict[str, object]] = []
+    actual_default_target = _inno_default_target()
     plans = (
-        ("default", default_target, False, False),
+        ("default", actual_default_target, False, False),
         ("spaced", spaced_target, True, False),
         ("upgrade", upgrade_target, True, True),
     )
@@ -316,6 +326,8 @@ def collect_evidence(
         "portable_crc_pass": True,
         "portable_runtime_file_count": len(expected),
         "isolated_user_profile": str(isolated_home),
+        "requested_default_target": str(default_target),
+        "actual_inno_default_target": str(actual_default_target),
         "appdata_sentinel": str(appdata_sentinel),
         "appdata_preserved_after_uninstall": (
             appdata_sentinel.is_file()

@@ -902,7 +902,11 @@ class RangeScoutWindow:
             executor=runtime_executor,
         )
         self._qt_window.runtime_close_interceptor = self._intercept_window_close
-        self._qt_window.runtime_close_callback = self._shutdown_runtime
+        # A non-intercepted close (tray unavailable, explicit automation close,
+        # or application shutdown) must terminate the Qt event loop.  Normal
+        # user X / Alt+F4 remains intercepted above and continues to hide to
+        # the tray.
+        self._qt_window.runtime_close_callback = self._exit_application
         self.runtime.start(self.provider.provider_id, self.current_symbol, self._watchlist_symbols())
         if auto_refresh:
             self._on_refresh()
