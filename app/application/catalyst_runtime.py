@@ -61,6 +61,7 @@ class CatalystRuntime:
         self._clock = clock
         self._last_poll: dict[str, datetime] = {}
         self._in_flight: dict[str, Future] = {}
+        self._source_generation: dict[str, int] = {source.name: 0 for source in sources}
         self._events: OrderedDict[str, CatalystEvent] = OrderedDict()
         self._active_symbol = "AAPL"
         self._watchlist: set[str] = set()
@@ -97,7 +98,28 @@ class CatalystRuntime:
             self._last_poll[source.name] = now
             future = self._executor.submit(source.collect, set(symbols))
             self._in_flight[source.name] = future
-            future.add_done_callback(lambda completed, name=source.name: self._post(lambda: self._finish(name, completed)))
+            generation = self._source_generation.get(source.name, 0)
+            future.add_done_callback(
+                lambda completed, name=source.name, generation=generation:
+                self._post(lambda: self._finish(name, generation, completed))
+            )
+
+    def replace_source(self, name: str, source: CatalystSource | None) -> None:
+        """Atomically replace one credential-dependent source on the owner thread."""
+
+        normalized = str(name).strip().lower()
+        self.sources = [value for value in self.sources if value.name != normalized]
+        self._source_generation[normalized] = self._source_generation.get(normalized, 0) + 1
+        future = self._in_flight.pop(normalized, None)
+        if future is not None and not future.done():
+            future.cancel()
+        self._last_poll.pop(normalized, None)
+        self.source_status.pop(normalized, None)
+        if source is not None:
+            if source.name != normalized:
+                raise ValueError("replacement catalyst source name does not match")
+            self.sources.append(source)
+            self.source_status[normalized] = "not polled"
 
     def ingest(self, events: list[CatalystEvent]) -> None:
         if self._shutdown:
@@ -129,9 +151,15 @@ class CatalystRuntime:
         for future in self._in_flight.values():
             future.cancel()
 
-    def _finish(self, name: str, future: Future) -> None:
-        if self._shutdown:
+    def _finish(self, name: str, generation: int, future: Future) -> None:
+        if (
+            self._shutdown
+            or generation != self._source_generation.get(name)
+            or all(source.name != name for source in self.sources)
+        ):
             return
+        if self._in_flight.get(name) is future:
+            self._in_flight.pop(name, None)
         try:
             events = future.result()
         except Exception:
@@ -166,7 +194,6 @@ def build_official_sources(
     sec_resolver = SecSymbolResolver(sec_client, data_dir / "sec_symbol_cik_cache.json")
     nasdaq_client = OfficialFeedClient(user_agent, MINIMUM_POLL_SECONDS)
     white_house_client = OfficialFeedClient(user_agent, 1.0)
-    congress_client = OfficialFeedClient(user_agent, 1.0)
 
     def sec_collect(symbols: set[str]) -> list[CatalystEvent]:
         values: list[CatalystEvent] = []
@@ -185,13 +212,21 @@ def build_official_sources(
         CatalystSource("nasdaq", POLL_INTERVALS_SECONDS["nasdaq"], nasdaq_collect),
         CatalystSource("white_house", POLL_INTERVALS_SECONDS["white_house"], white_house_collect),
     ]
-    congress_credentials = credential_store.load("congress")
-    if congress_credentials is not None:
-        api_key = congress_credentials.values["api_key"]
-
-        def congress_collect(_symbols: set[str]) -> list[CatalystEvent]:
-            payload = congress_client.get_json(API_URL, headers=authentication_headers(api_key))
-            return parse_bills(payload, datetime.now(timezone.utc))
-
-        sources.append(CatalystSource("congress", POLL_INTERVALS_SECONDS["congress"], congress_collect))
+    congress = build_congress_source(credential_store, user_agent)
+    if congress is not None:
+        sources.append(congress)
     return sources
+
+
+def build_congress_source(credential_store: CredentialStore, user_agent: str) -> CatalystSource | None:
+    credentials = credential_store.load("congress")
+    if credentials is None:
+        return None
+    api_key = credentials.values["api_key"]
+    congress_client = OfficialFeedClient(user_agent, 1.0)
+
+    def congress_collect(_symbols: set[str]) -> list[CatalystEvent]:
+        payload = congress_client.get_json(API_URL, headers=authentication_headers(api_key))
+        return parse_bills(payload, datetime.now(timezone.utc))
+
+    return CatalystSource("congress", POLL_INTERVALS_SECONDS["congress"], congress_collect)

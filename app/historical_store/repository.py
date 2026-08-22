@@ -201,3 +201,32 @@ class HistoricalStore:
             )
             for row in reversed(rows)
         ]
+
+    def get_bars_any_provider_in_range(self, symbol: str, *, start: date, end: date) -> list[OhlcvBar]:
+        """Return the newest provider's locally cached bars within a calendar window."""
+
+        normalized = str(symbol).strip().upper()
+        provider_row = self._con.execute(
+            """SELECT provider,MAX(bar_date) AS newest FROM ohlcv_bars
+               WHERE symbol=? AND bar_date<=? GROUP BY provider ORDER BY newest DESC LIMIT 1""",
+            (normalized, end.isoformat()),
+        ).fetchone()
+        if provider_row is None:
+            return []
+        rows = self._con.execute(
+            """SELECT b.*,i.currency FROM ohlcv_bars b JOIN instruments i
+               ON i.symbol=b.symbol AND i.provider=b.provider
+               WHERE b.symbol=? AND b.provider=? AND b.bar_date>=? AND b.bar_date<=?
+               ORDER BY b.bar_date ASC""",
+            (normalized, provider_row["provider"], start.isoformat(), end.isoformat()),
+        ).fetchall()
+        return [
+            OhlcvBar(
+                instrument=InstrumentIdentifier(normalized, row["exchange"]), date=date.fromisoformat(row["bar_date"]),
+                open=Decimal(row["open"]), high=Decimal(row["high"]), low=Decimal(row["low"]), close=Decimal(row["close"]),
+                volume=row["volume"], provider=row["provider"], adjusted=bool(row["adjusted"]), source=row["source"],
+                provider_timestamp=datetime.fromisoformat(row["provider_timestamp"]) if row["provider_timestamp"] else None,
+                source_timezone=row["source_timezone"] or "UTC",
+            )
+            for row in rows
+        ]

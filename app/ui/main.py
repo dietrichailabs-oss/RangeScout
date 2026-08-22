@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 import os
@@ -22,7 +22,7 @@ from app.catalysts.entities import CatalystEvent
 from app.catalysts.presentation import human_duration, human_event_title, safe_source_url, source_link_label
 from app.alerts.rules import AlertRule, evaluate_alerts
 from app.alerts.dispatcher import AlertNotification, AlertPreferences, AlertType
-from app.alerts.presentation import humanize_event_code
+from app.alerts.presentation import humanize_event_code, humanize_status_text
 from app.application.catalyst_runtime import CatalystSource
 from app.application.live_trading_runtime import LiveSymbolState
 from app.application.runtime_coordinator import RuntimeCoordinator
@@ -648,6 +648,7 @@ class RangeScoutWindow:
         self._pending_quote_selection_at: float | None = None
         self._history_tasks: dict[int, Any] = {}
         self._history_dispatch_started: dict[int, float] = {}
+        self._market_range_revision = 0
         self._comparison_tasks: set[Any] = set()
         self._auto_network_refresh = bool(auto_refresh)
         self._performance_timings: dict[str, Any] = {
@@ -2466,7 +2467,7 @@ class RangeScoutWindow:
         self.scanner_halted_text = QLabel("N/A")
         self.scanner_market_text = QLabel("Explicit")
         for title, value, note in (
-            ("Total Matches", self.scanner_total_text, "permitted universe"),
+            ("Eligible Rows", self.scanner_total_text, "permitted universe"),
             ("Gainers", self.scanner_gainers_text, "provider-dependent"),
             ("Breakouts", self.scanner_breakouts_text, "configured rules"),
             ("Catalyst Hits", self.scanner_catalysts_text, "official sources"),
@@ -2549,15 +2550,21 @@ class RangeScoutWindow:
         rows = filter_scanner_rows(
             list(getattr(self, "_scanner_rows", [])),
             getattr(self, "_active_scanner_filter", "All Live"),
-            set(self._watchlist_symbols()),
+            set(getattr(self, "_ticker_watchlist_symbols", [])),
         )
         self.scanner_results.clear()
+        rule_hits = getattr(self, "_scanner_rule_hits", {})
         for scan in rows:
             movement = "N/A" if scan.change_percent is None else f"{scan.change:+.2f} ({scan.change_percent:+.2f}%)"
             volume = "N/A" if scan.volume is None else f"{scan.volume:,}"
+            annotations = rule_hits.get(scan.symbol, [])
+            rule_text = "" if not annotations else " · Rules " + "; ".join(
+                f"{humanize_event_code(hit.rule)} ({hit.rule}): {humanize_status_text(hit.detail)}"
+                for hit in annotations
+            )
             item = QListWidgetItem(
                 f"{scan.symbol} · {scan.company} · {scan.price:,.2f} · {movement} · Volume {volume} · "
-                f"{scan.freshness} · {', '.join(scan.sources)}"
+                f"{scan.freshness} · {', '.join(scan.sources)}{rule_text}"
             )
             item.setData(Qt.ItemDataRole.UserRole, scan.symbol)
             self.scanner_results.addItem(item)
@@ -2566,6 +2573,7 @@ class RangeScoutWindow:
         self.scanner_status_text.setText(
             f"{state} • {len(rows)} eligible rows • {', '.join(sources) if sources else 'local/cache'} • progressive enrichment"
         )
+        self.scanner_total_text.setText(str(len(getattr(self, "_scanner_rows", []))))
         if not rows:
             self.scanner_results.addItem(f"{state} — no rows match this filter; background work never blocks Active Symbol quotes.")
 
@@ -3003,6 +3011,7 @@ class RangeScoutWindow:
 
     def _on_active_symbol_changed(self, state: ActiveSymbolState) -> None:
         switch_began = perf_counter()
+        self._market_range_revision += 1
         had_quote_work = bool(self._quote_tasks) or self._quote_coalesce_timer.isActive()
         self._cancel_stale_quote_tasks()
         self._clear_symbol_bound_surfaces(state.symbol)
@@ -3829,6 +3838,10 @@ class RangeScoutWindow:
 
     def _on_credential_state_changed(self, provider_id: str, configured: bool) -> None:
         """Synchronize every credential-dependent view and runtime immediately."""
+        # Runtime revocation/activation is safety-critical and must occur even
+        # if an optional settings widget refresh later fails.
+        if hasattr(self, "runtime"):
+            self.runtime.refresh_credential_source(provider_id)
         self.analyst_service.invalidate_provider(provider_id)
         self._refresh_provider_settings()
         self._refresh_fabric_provider_status()
@@ -4428,8 +4441,9 @@ class RangeScoutWindow:
     def _request_active_history_refresh(self, *, force: bool = False) -> None:
         if QThreadPool is None:
             return
-        request = self.active_symbol.request(source="history-background-refresh")
-        if request.generation in self._history_tasks:
+        revision = self._market_range_revision
+        request = self.active_symbol.request(source=f"history-background-refresh:{revision}")
+        if any(task.request.source == request.source for task in self._history_tasks.values()):
             return
         if not force and self.current_bars:
             newest = self.current_bars[-1].date
@@ -4438,8 +4452,8 @@ class RangeScoutWindow:
         task = _HistoryRefreshTask(
             self.market_data, self.app.store.path, request, int(self.market_days_input.value())
         )
-        self._history_tasks[request.generation] = task
-        self._history_dispatch_started[request.generation] = perf_counter()
+        self._history_tasks[request.request_id] = task
+        self._history_dispatch_started[request.request_id] = perf_counter()
         task.signals.finished.connect(self._on_active_history_finished)
         QThreadPool.globalInstance().start(task)
 
@@ -4451,11 +4465,15 @@ class RangeScoutWindow:
         bars: list[OhlcvBar] | None,
         error: Exception | None,
     ) -> None:
-        self._history_tasks.pop(request.generation, None)
-        began = self._history_dispatch_started.pop(request.generation, None)
+        self._history_tasks.pop(request.request_id, None)
+        began = self._history_dispatch_started.pop(request.request_id, None)
         if began is not None:
             self._performance_timings["history_refresh_latency_ms"] = (perf_counter() - began) * 1000.0
-        if not self.active_symbol.accepts(request):
+        try:
+            range_revision = int(request.source.rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            range_revision = -1
+        if not self.active_symbol.accepts(request) or range_revision != self._market_range_revision:
             return
         if error is not None:
             if self.current_bars:
@@ -4467,7 +4485,11 @@ class RangeScoutWindow:
             return
         if not bars:
             return
-        self.current_bars = list(bars)
+        range_days = int(self.market_days_input.value())
+        end = datetime.now(NEW_YORK).date()
+        start = end - timedelta(days=range_days)
+        selected_bars = [bar for bar in bars if start <= bar.date <= end]
+        self.current_bars = selected_bars
         self._apply_bars_to_charts(self.current_bars)
         self._apply_history_presentation(self.current_bars, provider_name=provider_name or provider_id)
         if self.current_quote is not None and self.current_quote.instrument.identifier.symbol == request.symbol:
@@ -4621,7 +4643,7 @@ class RangeScoutWindow:
         self.market_volume_text.setText(f"VOLUME\n{volume}\n\nAVERAGE VOLUME\n{average_volume}")
         self.market_cap_text.setText(f"MARKET CAP\n{market_cap}\n\nSHARES\nN/A")
         self.metrics_text.setText(
-            f"Previous close  {previous_close if previous_close is not None else 'N/A'} ({fused_close.source})\n"
+            f"Previous close  {format_financial_value(previous_close, 'money', quote.currency).text} ({fused_close.source})\n"
             f"Day range  {day_range}\n52-week range  {year_range}\n"
             f"Volume  {volume}\nAverage volume  {average_volume}\nMarket cap  {market_cap}"
         )
@@ -4938,18 +4960,27 @@ class RangeScoutWindow:
     def _on_market_range_selected(self, days: int) -> None:
         """Apply a mutually exclusive range immediately from local history, then enrich if needed."""
         days = max(30, min(1095, int(days)))
+        self._market_range_revision += 1
         for value, button in self.market_range_buttons.items():
             button.blockSignals(True)
             button.setChecked(value == days)
             button.blockSignals(False)
         self.market_days_input.setValue(days)
-        cached = self.app.store.get_recent_bars_any_provider(self.current_symbol, limit=days)
+        end = datetime.now(NEW_YORK).date()
+        start = end - timedelta(days=days)
+        cached = self.app.store.get_bars_any_provider_in_range(self.current_symbol, start=start, end=end)
         if cached:
             self.current_bars = cached
             self._apply_bars_to_charts(cached)
             self._apply_history_presentation(cached, provider_name=cached[-1].provider or "local cache", from_cache=True)
             self.result_text.setText(f"Showing {len(cached)} cached {self.current_symbol} bars for the selected range.")
-        if len(cached) < min(days, 30) and self._auto_network_refresh:
+        tolerance = timedelta(days=7)
+        coverage_complete = bool(
+            cached
+            and cached[0].date <= start + tolerance
+            and cached[-1].date >= end - tolerance
+        )
+        if not coverage_complete and self._auto_network_refresh:
             self._request_active_history_refresh(force=True)
 
     def _on_watchlist_create_or_update(self) -> None:
@@ -5326,24 +5357,58 @@ class RangeScoutWindow:
 
     def runtime_ticker_state(self, states: dict[str, LiveSymbolState], plan: TickerSubscriptionPlan) -> None:
         self._render_ticker_ribbon(states, plan)
+        # Live ticks must never perform storage work. The watchlist cache is
+        # refreshed only by explicit watchlist UI/storage operations.
+        allowed = {self.current_symbol, *self._ticker_watchlist_symbols, *plan.subscribed}
+        additions: list[ScannerRow] = []
+        existing = {row.symbol: row for row in getattr(self, "_scanner_rows", [])}
+        for symbol, state in states.items():
+            normalized = symbol.strip().upper()
+            if normalized not in allowed or state.price is None:
+                continue
+            previous = state.previous_close or state.previous_price
+            change = state.price - previous if previous not in (None, Decimal("0")) else None
+            percent = change / previous * Decimal("100") if change is not None and previous else None
+            matches = self.local_instrument_search.search(normalized, 1)
+            company = matches[0].name if matches and matches[0].symbol == normalized else (
+                existing[normalized].company if normalized in existing else "Company name unavailable"
+            )
+            candle = state.current_candle
+            additions.append(ScannerRow(
+                symbol=normalized,
+                company=company,
+                price=state.price,
+                change=change,
+                change_percent=percent,
+                volume=int(candle.volume) if candle is not None else None,
+                day_high=candle.high if candle is not None else None,
+                day_low=candle.low if candle is not None else None,
+                vwap=state.indicators.vwap if state.indicators is not None else None,
+                halt_state=state.halt_status,
+                freshness=humanize_status_text(state.feed_state),
+                sources=(self.provider.provider_name,),
+                updated_at=state.last_trade_at,
+            ))
+        if additions:
+            self._scanner_rows = aggregate_scanner_rows([*getattr(self, "_scanner_rows", []), *additions])
+            self._render_scanner_rows()
 
     def runtime_scanner_hits(self, hits: list[Any]) -> None:
-        self.scanner_results.clear()
+        grouped: dict[str, list[Any]] = defaultdict(list)
+        for hit in hits:
+            grouped[str(hit.symbol).strip().upper()].append(hit)
+        self._scanner_rule_hits = dict(grouped)
         if hasattr(self, "live_scanner_context"):
             self.live_scanner_context.clear()
-        if hasattr(self, "scanner_total_text"):
-            self.scanner_total_text.setText(str(len(hits)))
-        if not hits:
-            state = "All Live" if market_session_status(datetime.now(timezone.utc)).is_open else "Latest Available"
-            self.scanner_results.addItem(f"{state} — no rule matches yet; cached Active Symbol and watchlist quotes remain eligible.")
-            if hasattr(self, "live_scanner_context"):
-                self.live_scanner_context.addItem("No current scanner hits in the permitted live universe.")
-            return
+        self._render_scanner_rows()
+        if not hits and hasattr(self, "live_scanner_context"):
+            self.live_scanner_context.addItem("No current rule hits; eligible Scanner feed rows remain visible.")
         for hit in hits:
-            item = QListWidgetItem(f"{hit.symbol} | {hit.rule} | {hit.detail}")
-            item.setData(Qt.ItemDataRole.UserRole, hit.symbol)
-            self.scanner_results.addItem(item)
             if hasattr(self, "live_scanner_context"):
+                item = QListWidgetItem(
+                    f"{hit.symbol} | {humanize_event_code(hit.rule)} | {humanize_status_text(hit.detail)}"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, hit.symbol)
                 self.live_scanner_context.addItem(item.clone())
 
     def _refresh_scanner_latest_row(self, quote: QuoteSnapshot) -> None:
@@ -5365,20 +5430,15 @@ class RangeScoutWindow:
 
     def runtime_alert_notification(self, notification: AlertNotification) -> None:
         event_label = humanize_event_code(notification.alert_type.value)
-        message = " ".join(humanize_event_code(part) if "_" in part and part.upper() == part else part for part in notification.message.split())
+        message = humanize_status_text(notification.message)
         text = f"{event_label} · {notification.symbol or 'Market'} · {message} · {notification.occurred_at.astimezone(NEW_YORK):%b %d, %I:%M %p ET}"
         market_types = {AlertType.TRADE_HALT, AlertType.TRADE_RESUME}
         if notification.alert_type in market_types and hasattr(self, "market_alert_list"):
             category = "Resumptions" if notification.alert_type == AlertType.TRADE_RESUME else "Trading Halts"
             self._market_alert_records.append((category, notification.symbol or "", text))
             self._render_market_alerts()
-            target = None
-        else:
-            target = self.alert_list
-        if target is not None:
-            if target.count() == 1 and target.item(0).text().startswith(("No current", "No active")):
-                target.clear()
-            target.addItem(text)
+        # Runtime notifications are automatic official/system events. Your
+        # Alerts is reserved exclusively for user-created rules.
         if hasattr(self, "alert_history_list"):
             if self.alert_history_list.count() == 1 and self.alert_history_list.item(0).text().startswith("No alerts"):
                 self.alert_history_list.clear()

@@ -22,6 +22,19 @@ def humanize_event_code(value: str) -> str:
     return EVENT_LABELS.get(code, code.replace("_", " ").title())
 
 
+def humanize_status_text(value: str) -> str:
+    """Humanize enum-like status phrases while preserving ordinary prose."""
+
+    text = str(value or "").strip()
+    if not text:
+        return "Market Event"
+    parts = re.split(r"(\s+[—-]\s+)", text, maxsplit=1)
+    head = parts[0]
+    if head == head.upper() and any(character.isalpha() for character in head):
+        parts[0] = humanize_event_code(head)
+    return "".join(parts)
+
+
 def market_event_filter(code: str) -> str:
     normalized = str(code or "").upper()
     if "RESUM" in normalized:

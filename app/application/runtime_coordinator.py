@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from app.alerts.dispatcher import AlertDispatcher, AlertNotification, AlertPreferences, AlertType
-from app.application.catalyst_runtime import CatalystRuntime, CatalystSource, build_official_sources
+from app.application.catalyst_runtime import (
+    CatalystRuntime,
+    CatalystSource,
+    build_congress_source,
+    build_official_sources,
+)
 from app.application.live_trading_runtime import LiveSymbolState, LiveTradingRuntime, LiveTradingSink
 from app.catalysts.correlation import CorrelatedEvent
 from app.catalysts.storage import CatalystStore
@@ -47,6 +52,8 @@ class RuntimeCoordinator(LiveTradingSink):
         user_agent: str = SEC_USER_AGENT,
     ) -> None:
         self.view = view
+        self._credential_store = credential_store
+        self._user_agent = user_agent
         self._executor = executor or ThreadPoolExecutor(max_workers=2, thread_name_prefix="RangeScoutFeeds")
         self._owns_executor = executor is None
         self.alert_dispatcher = AlertDispatcher(
@@ -68,6 +75,16 @@ class RuntimeCoordinator(LiveTradingSink):
             self.live.set_halt_status,
         )
         self._shutdown = False
+
+    def refresh_credential_source(self, provider_id: str) -> None:
+        """Synchronize credential-backed runtime sources without restarting."""
+
+        if str(provider_id).strip().lower() != "congress" or self._shutdown:
+            return
+        self.catalysts.replace_source(
+            "congress",
+            build_congress_source(self._credential_store, self._user_agent),
+        )
 
     def start(self, provider: str, active_symbol: str, watchlist_symbols: list[str]) -> None:
         self._shutdown = False
