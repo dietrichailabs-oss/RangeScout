@@ -45,6 +45,7 @@ class Capability(str, Enum):
     CORPORATE_ACTIONS = "corporate_actions"
     MARKET_STATUS = "market_status"
     MACRO_SERIES = "macro_series"
+    NEWS = "news"
 
 
 class CredentialKind(str, Enum):

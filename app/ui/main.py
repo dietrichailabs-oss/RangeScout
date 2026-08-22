@@ -18,8 +18,11 @@ from app.historical_store.repository import HistoricalStore
 from app.application.local_data import delete_local_data, LocalDataDeletionReport
 from app.analytics.trading_indicators import calculate_risk
 from app.catalysts.correlation import CorrelatedEvent, DIRECTION_DISCLOSURE
+from app.catalysts.entities import CatalystEvent
+from app.catalysts.presentation import human_duration, human_event_title, safe_source_url, source_link_label
 from app.alerts.rules import AlertRule, evaluate_alerts
 from app.alerts.dispatcher import AlertNotification, AlertPreferences, AlertType
+from app.alerts.presentation import humanize_event_code
 from app.application.catalyst_runtime import CatalystSource
 from app.application.live_trading_runtime import LiveSymbolState
 from app.application.runtime_coordinator import RuntimeCoordinator
@@ -27,8 +30,11 @@ from app.charts.prepare import prepare_chart_payload
 from app.comparisons.compare import compare_symbols
 from app.configuration.settings import ALLOWED_LIVE_REFRESH_INTERVALS_MS
 from app.configuration.settings import export_safe_settings, import_safe_settings
+from app.company_data.search import LocalInstrumentSearch
 from app.application.recent_symbols import RecentSymbols
 from app.ui.presentation import directional_price, freshness_label
+from app.ui.formatting import format_financial_value
+from app.market_data.fusion import previous_regular_close
 from app.ui.theme import resolve_effective_theme
 from app.exports.csv_writer import export_bars_csv
 from app.models.schemas import AlertEvent, AssetType, DataDelay, DataFreshnessState, Instrument, InstrumentIdentifier, OhlcvBar, QuoteSnapshot
@@ -39,6 +45,7 @@ from app.streaming.events import StreamStatus
 from app.streaming.providers import finnhub_url
 from app.streaming.qt_transport import QtWebSocketTransport
 from app.streaming.ticker import TickerSubscriptionPlan
+from app.scanner.engine import ScannerRow, aggregate_scanner_rows, filter_scanner_rows
 from app.notes.store import NoteStore
 from app.platform import platform_adapter
 from app.watchlists.manager import WatchlistStore
@@ -545,6 +552,26 @@ if QObject is not None and QRunnable is not None and Signal is not None:
             self.signals.finished.emit(self.request, asset, None)
 
 
+    class _NewsSignals(QObject):
+        finished = Signal(object, object, object)
+
+
+    class _NewsTask(QRunnable):
+        def __init__(self, service: Any, request: SymbolRequest) -> None:
+            super().__init__()
+            self.service = service
+            self.request = request
+            self.signals = _NewsSignals()
+
+        def run(self) -> None:
+            try:
+                result = self.service.fetch_news(self.request.symbol)
+            except Exception as exc:
+                self.signals.finished.emit(self.request, None, exc)
+                return
+            self.signals.finished.emit(self.request, result, None)
+
+
     class _RuntimeMainWindow(QMainWindow):
         def __init__(self) -> None:
             super().__init__()
@@ -595,6 +622,7 @@ class RangeScoutWindow:
 
         adapter = platform_adapter()
         self.app = application or RangeScoutApplication(data_dir=Path(adapter.app_data_dir), credential_store=credential_store)
+        self._credential_unsubscribe = self.app.provider_configuration.subscribe(self._on_credential_state_changed)
         self._qt_window.resize(self.app.settings.window_width, self.app.settings.window_height)
         self.provider = self.app.get_provider()
         self.market_data = self.app.market_data_service
@@ -607,6 +635,7 @@ class RangeScoutWindow:
         self._ticker_watchlist_title = "My Watchlist"
         self._ticker_watchlist_symbols: list[str] = []
         self.alert_rules: list[AlertRule] = []
+        self._market_alert_records: list[tuple[str, str, str]] = []
         self._quote_refresh_in_flight = False
         self._active_quote_task: Any | None = None
         self._quote_thread_pool: Any | None = None
@@ -649,9 +678,18 @@ class RangeScoutWindow:
         self._analyst_status_message = "Analyst data waiting for the Research surface."
         self._company_logo_tasks: dict[int, Any] = {}
         self._company_logo_inflight: set[tuple[str, str, str]] = set()
+        self._news_tasks: dict[int, Any] = {}
+        self._official_catalyst_events: list[CorrelatedEvent] = []
+        self._provider_news_events: list[CatalystEvent] = []
+        self._news_status_message = "Provider news has not been checked yet."
 
         self.watchlist_store = WatchlistStore.from_path(self.app.data_dir / "watchlists.json")
         self.note_store = NoteStore(self.app.data_dir / "notes.json")
+        self.local_instrument_search = LocalInstrumentSearch(self.app.store.path)
+        self._selected_note_id: str | None = None
+        self._active_note_category = "Research Notes"
+        self._note_editor_dirty = False
+        self._loading_note_editor = False
         self.research_service = research_service or ResearchService(
             SecCompanyFactsClient(ResearchCache(Path(self.app.data_dir) / "research_cache"))
         )
@@ -847,6 +885,7 @@ class RangeScoutWindow:
         self._refresh_discovery_status()
         self._refresh_company_logo_status()
         self._refresh_company_database_status()
+        self._refresh_analyst_availability()
         self._load_local_symbol_snapshot(self.current_symbol)
         self._request_company_logo(self.current_symbol)
         transport_factory = runtime_transport_factory or self._production_transport
@@ -987,7 +1026,7 @@ class RangeScoutWindow:
         search_mark = QLabel("⌕")
         search_mark.setObjectName("search_mark")
         active_layout.addWidget(search_mark)
-        self.active_symbol_input.setPlaceholderText("Search symbols, companies, or topics…")
+        self.active_symbol_input.setPlaceholderText("Search symbols or companies...")
         self.active_symbol_input.setObjectName("global_symbol_search")
         self.active_symbol_input.setMaximumWidth(720)
         active_layout.addWidget(self.active_symbol_input, 1)
@@ -1237,9 +1276,20 @@ class RangeScoutWindow:
         if QComboBox is None:
             raise NoGuiRuntimeError("PySide6 is not installed.")
         combo = QComboBox()
-        if self.app.registry is not None:
-            combo.addItems(self.app.registry.list_available())
-        combo.setCurrentText(self.provider.provider_id)
+        combo.setObjectName("market_provider_mode_selector")
+        combo.addItem("Smart Search (Recommended)", "smart")
+        for status in self.app.fabric_provider_statuses():
+            provider_id = str(status["provider_id"])
+            if not status["enabled"] or "quote" not in status["capabilities"]:
+                continue
+            label = str(status["display_name"])
+            if status["requires_credentials"] and not status["configured"]:
+                label += " — Missing API key"
+            combo.addItem(label, provider_id)
+            index = combo.count() - 1
+            combo.model().item(index).setEnabled(not status["requires_credentials"] or bool(status["configured"]))
+        current = combo.findData(self.app.settings.provider_mode)
+        combo.setCurrentIndex(max(0, current))
         return combo
 
     def _build_provider_settings_selector(self) -> QComboBox:
@@ -1450,7 +1500,11 @@ class RangeScoutWindow:
         quick_actions = QHBoxLayout()
         for label, index in (("+ Watchlist", 3), ("Compare", 2), ("Alerts", 5), ("Notes", 6)):
             action = QPushButton(label)
-            action.clicked.connect(lambda _checked=False, destination=index: self.tabs.setCurrentIndex(destination))
+            if label == "+ Watchlist":
+                self.market_watchlist_button = action
+                action.clicked.connect(self._on_add_active_symbol_to_watchlist)
+            else:
+                action.clicked.connect(lambda _checked=False, destination=index: self.tabs.setCurrentIndex(destination))
             quick_actions.addWidget(action)
         actions.addLayout(quick_actions)
         provider_actions = QHBoxLayout()
@@ -1469,12 +1523,14 @@ class RangeScoutWindow:
         body.setSpacing(8)
         chart_card, chart_layout = self._card("Price Chart", "Closest supported provider window • Active Symbol")
         chart_controls = QHBoxLayout()
+        self.market_range_buttons: dict[int, QPushButton] = {}
         for days, label in ((30, "1M"), (90, "3M"), (180, "6M"), (365, "1Y"), (1095, "3Y")):
             button = QPushButton(label)
             button.setCheckable(True)
             button.setChecked(days == 30)
-            button.clicked.connect(lambda _checked=False, value=days: self.market_days_input.setValue(value))
+            button.clicked.connect(lambda _checked=False, value=days: self._on_market_range_selected(value))
             chart_controls.addWidget(button)
+            self.market_range_buttons[days] = button
         chart_controls.addWidget(QPushButton("Indicators"))
         chart_controls.addWidget(QPushButton("Studies"))
         chart_controls.addStretch(1)
@@ -1754,34 +1810,56 @@ class RangeScoutWindow:
             ) * 1000.0
             self._catalyst_dispatch_started = None
         active_symbol = self.current_symbol.strip().upper()
-        events = [
+        self._official_catalyst_events = [
             correlated
             for correlated in events
             if not correlated.event.symbols
             or active_symbol in {symbol.strip().upper() for symbol in correlated.event.symbols}
         ]
+        self._render_catalyst_news()
+
+    def _render_catalyst_news(self) -> None:
+        active_symbol = self.current_symbol.strip().upper()
+        official = list(self._official_catalyst_events)
+        news = [
+            event for event in self._provider_news_events
+            if active_symbol in {value.strip().upper() for value in event.symbols}
+        ]
+        combined: list[tuple[CatalystEvent, str]] = [
+            (item.event, item.event.relevance.value.title()) for item in official
+        ] + [(event, "News") for event in news]
+        deduped: list[tuple[CatalystEvent, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for event, prefix in sorted(combined, key=lambda item: item[0].published_at, reverse=True):
+            key = (event.title.casefold(), event.source_url)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((event, prefix))
         self.catalyst_list.clear()
         if hasattr(self, "research_catalyst_list"):
             self.research_catalyst_list.clear()
         if hasattr(self, "research_overview_catalysts"):
             self.research_overview_catalysts.clear()
-        if not events:
-            self.catalyst_list.addItem("No catalyst events received yet.")
+        if not deduped:
+            empty = f"No matching events or stories. {self._news_status_message}"
+            self.catalyst_list.addItem(empty)
             if hasattr(self, "research_catalyst_list"):
-                self.research_catalyst_list.addItem("No official catalyst events received yet.")
+                self.research_catalyst_list.addItem(empty)
             if hasattr(self, "research_overview_catalysts"):
-                self.research_overview_catalysts.addItem("No official catalyst events received yet.")
+                self.research_overview_catalysts.addItem(empty)
             return
-        for correlated in events:
-            event = correlated.event
-            age_seconds = max(0, int((datetime.now(timezone.utc) - event.published_at).total_seconds()))
-            age = f"{age_seconds}s ago" if age_seconds < 60 else f"{age_seconds // 60}m ago"
+        for event, prefix in deduped:
+            age = human_duration(event.published_at)
             symbols = " · ".join(event.symbols) if event.symbols else "Broad Market"
+            source_url = safe_source_url(event.source_url, official_only=event.source.lower() in {"sec", "nasdaq", "congress", "white house"})
+            link_text = source_link_label(event.source) if source_url else "Source link unavailable"
             item = QListWidgetItem(
-                f"{event.relevance.value} — {symbols}\n{event.title}\n{age} | Source: {event.source}\n"
-                f"Category: {event.category} | Direction: {event.direction}"
+                f"{prefix} — {symbols}\n{human_event_title(event.title)}\n"
+                f"{age} · {event.source} · {link_text}\n"
+                f"{event.category.replace('_', ' ').title()} · Direction {event.direction.replace('_', ' ').title()}"
             )
-            item.setData(Qt.ItemDataRole.UserRole, event.source_url)
+            item.setData(Qt.ItemDataRole.UserRole, source_url)
             routed_symbol = active_symbol if active_symbol in {symbol.strip().upper() for symbol in event.symbols} else ""
             item.setData(int(Qt.ItemDataRole.UserRole) + 1, routed_symbol)
             self.catalyst_list.addItem(item)
@@ -1796,7 +1874,7 @@ class RangeScoutWindow:
         if isinstance(symbol, str) and symbol:
             self.set_active_symbol(symbol, source="catalyst")
         url = item.data(Qt.ItemDataRole.UserRole)
-        if isinstance(url, str) and url.startswith(("https://", "http://")) and QDesktopServices is not None and QUrl is not None:
+        if isinstance(url, str) and safe_source_url(url) and QDesktopServices is not None and QUrl is not None:
             QDesktopServices.openUrl(QUrl(url))
 
     def _on_calculate_risk(self) -> None:
@@ -1971,7 +2049,7 @@ class RangeScoutWindow:
 
         self.notes_symbol_input = QLineEdit("AAPL"); self.notes_symbol_input.setPlaceholderText("AAPL")
         self.notes_text = QTextEdit(); self.notes_text.setPlaceholderText("Write a note to capture your idea, thesis, or reminder.")
-        self.notes_list = QListWidget(); add_btn = QPushButton("Add Note"); refresh_btn = QPushButton("Reload Notes")
+        self.notes_list = QListWidget(); save_btn = QPushButton("Save Note"); new_btn = QPushButton("New Note"); delete_btn = QPushButton("Delete Note"); refresh_btn = QPushButton("Reload Notes")
         body = QHBoxLayout(); body.setSpacing(8)
         categories_card, categories_layout = self._card("Note Categories", "Local organization")
         self.note_categories = QListWidget()
@@ -1986,10 +2064,21 @@ class RangeScoutWindow:
         editor_card, editor_layout = self._card("Note Editor", "Capture thesis, levels, catalysts, and reminders")
         self.note_editor_title = QLabel("Research note for AAPL"); self.note_editor_title.setObjectName("company_identity")
         editor_layout.addWidget(self.note_editor_title); editor_layout.addWidget(self.notes_text, 1)
-        editor_layout.addWidget(self._hbox([add_btn, refresh_btn]))
+        self.note_editor_mode = QLabel("New Note")
+        self.note_editor_mode.setObjectName("note_editor_mode")
+        editor_layout.addWidget(self.note_editor_mode)
+        editor_layout.addWidget(self._hbox([new_btn, save_btn, delete_btn, refresh_btn]))
         body.addWidget(editor_card, 62)
         layout.addLayout(body, 1)
-        add_btn.clicked.connect(self._on_add_note); refresh_btn.clicked.connect(self._on_reload_notes)
+        self.note_categories.setCurrentRow(1)
+        self.note_categories.currentTextChanged.connect(self._on_note_category_changed)
+        self.notes_list.itemClicked.connect(self._on_note_selected)
+        self.notes_text.textChanged.connect(self._on_note_text_changed)
+        self.notes_symbol_input.textEdited.connect(lambda _text: self._on_note_text_changed())
+        new_btn.clicked.connect(self._on_new_note)
+        save_btn.clicked.connect(self._on_save_note)
+        delete_btn.clicked.connect(self._on_delete_note)
+        refresh_btn.clicked.connect(self._on_reload_notes)
         wrapper = QVBoxLayout(tab); wrapper.setContentsMargins(0, 0, 0, 0); wrapper.addWidget(self._scrollable(page))
         return tab
 
@@ -2196,7 +2285,7 @@ class RangeScoutWindow:
         live_add_btn = QPushButton("Enable Live Alert"); evaluate_btn = QPushButton("Evaluate")
 
         body = QHBoxLayout(); body.setSpacing(8)
-        active_card, active_layout = self._card("Active Alerts", "Definitions may be locally created; no trigger history is fabricated")
+        active_card, active_layout = self._card("Your Alerts", "User-configured local price, volume, and analysis rules")
         controls = QHBoxLayout(); controls.addWidget(self.alert_symbol_input); controls.addWidget(self.alert_mode_input)
         controls.addWidget(self.alert_threshold_input); controls.addWidget(add_btn); controls.addWidget(evaluate_btn)
         active_layout.addLayout(controls)
@@ -2208,6 +2297,15 @@ class RangeScoutWindow:
         history_card, history_layout = self._card("Recently Triggered", "Actual local session history only")
         self.alert_history_list = QListWidget(); self.alert_history_list.addItem("No alerts triggered in this session.")
         history_layout.addWidget(self.alert_history_list); right.addWidget(history_card, 1)
+        market_card, market_layout = self._card("Market Alerts", "Exchange, regulatory, halt, and resumption events")
+        self.market_alert_filter = QComboBox()
+        self.market_alert_filter.addItems(("All", "Trading Halts", "Resumptions", "Regulatory", "Watchlist"))
+        self.market_alert_filter.currentTextChanged.connect(self._render_market_alerts)
+        market_layout.addWidget(self.market_alert_filter)
+        self.market_alert_list = QListWidget()
+        self.market_alert_list.addItem("No current market notices from the checked official sources.")
+        market_layout.addWidget(self.market_alert_list)
+        right.addWidget(market_card, 1)
         preferences_card, preferences_layout = self._card("Notification Settings", "Visual state is explicit; sound and desktop are optional")
         preferences = QFormLayout(); preferences.addRow("In-app visual", QLabel("Enabled"))
         preferences.addRow("Sound", self.alert_sound_input); preferences.addRow("Desktop", self.alert_desktop_input)
@@ -2351,7 +2449,10 @@ class RangeScoutWindow:
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(10)
-        layout.addWidget(self._surface_heading("Scanner", "Real-time scope: Active Symbol, subscribed stream, and watchlists only • no full-market claim"))
+        layout.addWidget(self._surface_heading("Scanner", "Aggregated latest market feed for the eligible Active Symbol and watchlist universe"))
+        self.scanner_status_text = QLabel("Latest Available • local/cache first • awaiting provider-backed rows")
+        self.scanner_status_text.setWordWrap(True)
+        layout.addWidget(self.scanner_status_text)
 
         summary = QHBoxLayout()
         self.scanner_total_text = QLabel("0")
@@ -2376,18 +2477,22 @@ class RangeScoutWindow:
 
         filters_card, filters_layout = self._card("Scanner Filters", "Available analysis views")
         filter_row = QHBoxLayout()
-        for label in ("Top Gainers", "Relative Volume", "Breakout", "Opening Range", "VWAP Cross", "News Catalyst", "Watchlist Only"):
+        self.scanner_filter_buttons: dict[str, QPushButton] = {}
+        for label in ("All Live", "Top Gainers", "Relative Volume", "Breakout", "Opening Range", "VWAP Cross", "News Catalyst", "Watchlist Only"):
             chip = QPushButton(label)
             chip.setCheckable(True)
+            chip.setChecked(label == "All Live")
+            chip.clicked.connect(lambda _checked=False, selected=label: self._on_scanner_filter(selected))
+            self.scanner_filter_buttons[label] = chip
             filter_row.addWidget(chip)
         filter_row.addStretch(1)
         filters_layout.addLayout(filter_row)
         layout.addWidget(filters_card)
 
         body = QHBoxLayout()
-        results_card, results_layout = self._card("Live Results", "Double-click a hit to open it in Live Trader")
+        results_card, results_layout = self._card("All Live / Latest Available", "Progressive, source-attributed rows; double-click to open in Live Trader")
         self.scanner_results = QListWidget()
-        self.scanner_results.addItem("No scanner observations received yet.")
+        self.scanner_results.addItem("Latest Available — awaiting cached or provider-backed rows for the permitted universe.")
         results_layout.addWidget(self.scanner_results)
         body.addWidget(results_card, 75)
 
@@ -2404,6 +2509,7 @@ class RangeScoutWindow:
         body.addWidget(detail_card, 25)
         layout.addLayout(body, 1)
         self.scanner_results.itemDoubleClicked.connect(self._on_scanner_activate)
+        self.scanner_results.itemClicked.connect(self._on_scanner_selected)
         wrapper = QVBoxLayout(tab)
         wrapper.setContentsMargins(0, 0, 0, 0)
         wrapper.addWidget(self._scrollable(page))
@@ -2413,6 +2519,51 @@ class RangeScoutWindow:
         symbol = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(symbol, str) and symbol:
             self.set_active_symbol(symbol, source="scanner", destination=self.live_trader_tab)
+
+    def _on_scanner_filter(self, selected: str) -> None:
+        for label, button in self.scanner_filter_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(label == selected)
+            button.blockSignals(False)
+        self._active_scanner_filter = selected
+        self._render_scanner_rows()
+
+    def _on_scanner_selected(self, item: QListWidgetItem) -> None:
+        symbol = item.data(Qt.ItemDataRole.UserRole)
+        row = next((value for value in getattr(self, "_scanner_rows", []) if value.symbol == symbol), None)
+        if row is None:
+            return
+        self.scanner_detail_symbol.setText(row.symbol)
+        change = "N/A" if row.change is None else f"{row.change:+.2f} ({row.change_percent:+.2f}%)"
+        self.scanner_detail_text.setText(
+            f"Company  {row.company}\nPrice  {row.price:,.2f}\nChange  {change}\n"
+            f"Volume  {'N/A' if row.volume is None else f'{row.volume:,}'}\n"
+            f"Sources  {', '.join(row.sources) or 'Local cache'}\nFreshness  {row.freshness}"
+        )
+
+    def _render_scanner_rows(self) -> None:
+        rows = filter_scanner_rows(
+            list(getattr(self, "_scanner_rows", [])),
+            getattr(self, "_active_scanner_filter", "All Live"),
+            set(self._watchlist_symbols()),
+        )
+        self.scanner_results.clear()
+        for scan in rows:
+            movement = "N/A" if scan.change_percent is None else f"{scan.change:+.2f} ({scan.change_percent:+.2f}%)"
+            volume = "N/A" if scan.volume is None else f"{scan.volume:,}"
+            item = QListWidgetItem(
+                f"{scan.symbol} · {scan.company} · {scan.price:,.2f} · {movement} · Volume {volume} · "
+                f"{scan.freshness} · {', '.join(scan.sources)}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, scan.symbol)
+            self.scanner_results.addItem(item)
+        state = "All Live" if market_session_status(datetime.now(timezone.utc)).is_open else "Latest Available"
+        sources = sorted({source for row in rows for source in row.sources})
+        self.scanner_status_text.setText(
+            f"{state} • {len(rows)} eligible rows • {', '.join(sources) if sources else 'local/cache'} • progressive enrichment"
+        )
+        if not rows:
+            self.scanner_results.addItem(f"{state} — no rows match this filter; background work never blocks Active Symbol quotes.")
 
     def _build_settings_tab_r4(self) -> QWidget:
         tab = QWidget(); page = QWidget()
@@ -2470,7 +2621,7 @@ class RangeScoutWindow:
 
         about_card, about_layout = self._card("About", "Product, publisher, release identity, and licensing")
         about_grid = QGridLayout()
-        about_grid.addWidget(QLabel("RangeScout 1.6.1"), 0, 0); about_grid.addWidget(QLabel("Dietrich AI Labs"), 0, 1)
+        about_grid.addWidget(QLabel("RangeScout 1.6.2"), 0, 0); about_grid.addWidget(QLabel("Dietrich AI Labs"), 0, 1)
         about_grid.addWidget(QLabel("Market analysis workstation • no trade execution"), 1, 0)
         about_grid.addWidget(QLabel("AUTHENTICODE SIGNING PENDING CERTIFICATE"), 1, 1)
         about_grid.addWidget(QLabel("Qt/PySide license and corresponding-source details ship with the application."), 2, 0, 1, 2)
@@ -2490,7 +2641,7 @@ class RangeScoutWindow:
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(10)
-        layout.addWidget(self._surface_heading("Settings", "RangeScout 1.6.1 preferences, privacy, and local-data controls"))
+        layout.addWidget(self._surface_heading("Settings", "RangeScout 1.6.2 preferences, privacy, and local-data controls"))
 
         grid = QGridLayout()
         grid.setSpacing(10)
@@ -2633,6 +2784,7 @@ class RangeScoutWindow:
         if self._data_providers_dialog is None:
             self._data_providers_dialog = DataProvidersDialog(self.app, self._qt_window)
             self._data_providers_dialog.finished.connect(self._provider_dialog_closed)
+            self._data_providers_dialog.mode_combo.currentIndexChanged.connect(self._sync_market_provider_mode)
         self._data_providers_dialog.refresh()
         self._data_providers_dialog.show()
         self._data_providers_dialog.raise_()
@@ -2694,7 +2846,7 @@ class RangeScoutWindow:
         return container
 
     def _wire_events(self) -> None:
-        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_mode_changed)
         self.data_providers_btn.clicked.connect(self._open_data_providers)
         self.refresh_discovery_btn.clicked.connect(self._on_refresh_discovery)
         self.update_company_database_btn.clicked.connect(self._on_update_company_database)
@@ -2737,18 +2889,38 @@ class RangeScoutWindow:
     def _configure_recent_symbol_search(self) -> None:
         if QCompleter is None or QStringListModel is None:
             return
+        self._search_display_to_symbol: dict[str, str] = {symbol: symbol for symbol in self.recent_symbols.values}
         self._recent_symbol_model = QStringListModel(list(self.recent_symbols.values))
         self._recent_symbol_completer = QCompleter(self._recent_symbol_model, self.active_symbol_input)
         self._recent_symbol_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.active_symbol_input.setCompleter(self._recent_symbol_completer)
         self.active_symbol_input.textEdited.connect(self._on_symbol_search_edited)
         self._recent_symbol_completer.activated.connect(
-            lambda symbol: self.set_active_symbol(str(symbol), source="recent-symbol")
+            lambda display: self.set_active_symbol(self._search_display_to_symbol.get(str(display), str(display)), source="local-search")
         )
 
+    def _sync_market_provider_mode(self, _index: int = 0) -> None:
+        mode = self.app.settings.provider_mode
+        index = self.provider_combo.findData(mode)
+        if index >= 0 and index != self.provider_combo.currentIndex():
+            self.provider_combo.blockSignals(True)
+            self.provider_combo.setCurrentIndex(index)
+            self.provider_combo.blockSignals(False)
+
     def _on_symbol_search_edited(self, text: str) -> None:
-        if not text.strip() and hasattr(self, "_recent_symbol_completer"):
-            self._recent_symbol_completer.setCompletionPrefix("")
+        if not hasattr(self, "_recent_symbol_completer"):
+            return
+        query = text.strip()
+        if not query:
+            values = list(self.recent_symbols.values)
+            self._search_display_to_symbol = {value: value for value in values}
+        else:
+            results = self.local_instrument_search.search(query)
+            self._search_display_to_symbol = {result.display_text: result.symbol for result in results}
+            values = list(self._search_display_to_symbol)
+        self._recent_symbol_model.setStringList(values)
+        self._recent_symbol_completer.setCompletionPrefix("")
+        if values:
             self._recent_symbol_completer.complete()
 
     def _focus_symbol_search(self) -> None:
@@ -2806,10 +2978,18 @@ class RangeScoutWindow:
         return opened
 
     def _on_global_symbol_submitted(self) -> None:
-        try:
-            self.set_active_symbol(self.active_symbol_input.text(), source="global-search")
-        except ValueError as exc:
-            self.result_text.setText(str(exc))
+        query = self.active_symbol_input.text().strip()
+        mapped = getattr(self, "_search_display_to_symbol", {}).get(query)
+        resolved = self.local_instrument_search.resolve_unique(mapped or query)
+        if resolved is not None:
+            self.set_active_symbol(resolved.symbol, source="local-search")
+            return
+        results = self.local_instrument_search.search(query)
+        if results:
+            self.result_text.setText(f"Multiple local matches for '{query}'. Choose a symbol from the ranked list.")
+            self._on_symbol_search_edited(query)
+        else:
+            self.result_text.setText("No matching instrument found")
 
     def set_active_symbol(self, symbol: str, *, source: str, destination: QWidget | None = None) -> ActiveSymbolState:
         state = self.active_symbol.set(symbol, source=source)
@@ -2848,6 +3028,8 @@ class RangeScoutWindow:
                     source="quote-symbol-selection",
                     selected_at=switch_began,
                 )
+        if self._auto_network_refresh:
+            self._request_active_news()
         self._request_company_logo(state.symbol, exchange=snapshot.identity.exchange)
         if hasattr(self, "watchlist_detail_symbol"):
             self.watchlist_detail_symbol.setText(state.symbol)
@@ -2873,7 +3055,10 @@ class RangeScoutWindow:
             if self._is_research_visible():
                 self._schedule_research_load()
         if hasattr(self, "notes_list"):
-            self._on_reload_notes()
+            if self._note_editor_dirty:
+                self.note_editor_mode.setText("Unsaved edits — save or discard before changing note context")
+            else:
+                self._on_reload_notes()
         self._refresh_peer_symbols()
         self._performance_timings["identity_switch_ms"] = (perf_counter() - switch_began) * 1000.0
         if self._auto_network_refresh and hasattr(self, "runtime"):
@@ -2917,6 +3102,9 @@ class RangeScoutWindow:
             if widget is not None:
                 widget.clear()
                 widget.addItem(f"Loading {symbol} catalysts…")
+        self._official_catalyst_events = []
+        self._provider_news_events = []
+        self._news_status_message = "Checking configured eligible news sources…"
         if hasattr(self, "offline_banner"):
             self.offline_banner.setVisible(False)
 
@@ -3184,9 +3372,13 @@ class RangeScoutWindow:
             value = snapshot.sections.get(section, {}).get(metric)
             if value is None or value.value is None:
                 return "N/A"
-            if isinstance(value.value, Decimal):
-                return f"{value.value:,.2f}"
-            return str(value.value)
+            units = str(value.units or "").lower()
+            semantic = "money" if units in {"usd", "eur", "gbp"} else "number"
+            return format_financial_value(
+                value.value,
+                semantic,
+                units.upper() if len(units) == 3 else "USD",
+            ).text
 
         self.research_key_metrics_text.setText(
             f"Revenue  {render('Overview', 'Revenue')}\n"
@@ -3233,6 +3425,29 @@ class RangeScoutWindow:
         if message:
             self._analyst_status_message += f" • {message}"
         self._update_research_status()
+        self._refresh_analyst_availability()
+
+    def _refresh_analyst_availability(self) -> None:
+        if not hasattr(self, "market_analyst_text"):
+            return
+        states: list[str] = []
+        result_states = self.current_analyst_result.provider_states if self.current_analyst_result else {}
+        for provider_id, label, capability in (
+            ("finnhub", "Finnhub", "recommendation trends"),
+            ("alpha_vantage", "Alpha Vantage", "earnings estimates"),
+        ):
+            try:
+                configured = self.app.credential_store.load(provider_id) is not None
+            except Exception:
+                configured = False
+            state = result_states.get(provider_id)
+            detail = (
+                state.value.replace("_", " ").title()
+                if state is not None
+                else (f"Configured — {capability} refresh pending" if configured else f"Missing API key — {capability} unavailable")
+            )
+            states.append(f"{label} — {detail}")
+        self.market_analyst_text.setText("\n".join(states))
 
     @staticmethod
     def _market_research_values(quote: QuoteSnapshot) -> dict[str, ResearchValue]:
@@ -3356,7 +3571,18 @@ class RangeScoutWindow:
     def _append_research_value(table: QTableWidget, metric: str, value: ResearchValue) -> None:
         row = table.rowCount()
         table.insertRow(row)
-        rendered = "N/A" if value.value is None else str(value.value)
+        units = str(value.units or "").lower()
+        metric_lower = metric.lower()
+        semantic = "number"
+        if "percent" in units or "yield" in metric_lower or metric_lower.endswith("margin"):
+            semantic = "percent"
+        elif "ratio" in units or any(token in metric_lower for token in ("ratio", "multiple", "p/e", "price to")):
+            semantic = "ratio"
+        elif units in {"usd", "eur", "gbp"} or any(token in metric_lower for token in ("revenue", "income", "assets", "equity", "cash", "debt", "price", "eps", "capitalization")):
+            semantic = "eps" if "eps" in metric_lower else "money"
+        elif any(token in metric_lower for token in ("year", "date", "accession", "cik")):
+            semantic = "text"
+        rendered = format_financial_value(value.value, semantic, units.upper() if len(units) == 3 else "USD").text
         filed = value.filing_date.isoformat() if value.filing_date else "not supplied"
         cells = (
             metric,
@@ -3366,7 +3592,10 @@ class RangeScoutWindow:
             f"{value.availability.value} • {value.selection_reason}",
         )
         for column, text in enumerate(cells):
-            table.setItem(row, column, QTableWidgetItem(text))
+            item = QTableWidgetItem(text)
+            if column == 1 and semantic != "text":
+                item.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
+            table.setItem(row, column, item)
 
     @staticmethod
     def _workstation_stylesheet(dark: bool) -> str:
@@ -3500,6 +3729,23 @@ class RangeScoutWindow:
             self._set_company_logo_placeholder(self.current_symbol)
             self._request_company_logo(self.current_symbol)
 
+    def _on_provider_mode_changed(self, _index: int = 0) -> None:
+        provider_id = str(self.provider_combo.currentData() or "smart")
+        self.app.set_provider_mode(provider_id)
+        if hasattr(self, "provider_mode_summary"):
+            self.provider_mode_summary.setText(
+                "Smart Search (Recommended)" if provider_id == "smart" else f"Forced provider: {self.provider_combo.currentText()}"
+            )
+        if self._data_providers_dialog is not None:
+            index = self._data_providers_dialog.mode_combo.findData(provider_id)
+            if index >= 0:
+                self._data_providers_dialog.mode_combo.blockSignals(True)
+                self._data_providers_dialog.mode_combo.setCurrentIndex(index)
+                self._data_providers_dialog.mode_combo.blockSignals(False)
+        if provider_id in getattr(self.app.registry, "list_available", lambda: [])():
+            self._on_provider_changed(provider_id)
+        self._request_active_quote_refresh(source="provider-mode-change")
+
     def _on_provider_changed(self, provider_id: str) -> None:
         self.provider = self.app.get_provider(provider_id)
         self.app.provider_id = provider_id
@@ -3539,7 +3785,7 @@ class RangeScoutWindow:
         provider_id = self.active_provider_combo.itemData(index)
         if not provider_id:
             return
-        provider_index = self.provider_combo.findText(str(provider_id))
+        provider_index = self.provider_combo.findData(str(provider_id))
         if provider_index >= 0 and provider_index != self.provider_combo.currentIndex():
             self.provider_combo.setCurrentIndex(provider_index)
         else:
@@ -3577,6 +3823,20 @@ class RangeScoutWindow:
         self.analyst_service.invalidate_provider(provider_id)
         self._refresh_provider_settings()
 
+    def _on_credential_state_changed(self, provider_id: str, configured: bool) -> None:
+        """Synchronize every credential-dependent view and runtime immediately."""
+        self.analyst_service.invalidate_provider(provider_id)
+        self._refresh_provider_settings()
+        self._refresh_fabric_provider_status()
+        self._refresh_congress_configuration()
+        self._refresh_company_logo_status()
+        if self._data_providers_dialog is not None:
+            self._data_providers_dialog.refresh()
+        if hasattr(self, "runtime"):
+            self.runtime.set_provider(self.provider.provider_id)
+        if hasattr(self, "market_analyst_text"):
+            self._refresh_analyst_availability()
+
     def _selected_fabric_provider_id(self) -> str:
         return str(self.fabric_provider_selector.currentData() or "")
 
@@ -3604,8 +3864,8 @@ class RangeScoutWindow:
     def _on_save_fabric_credentials(self) -> None:
         provider_id = self._selected_fabric_provider_id()
         try:
-            self.app.credential_store.save(
-                ProviderCredentials(provider_id, {"api_key": self.fabric_api_key_input.text()})
+            self.app.provider_configuration.save_credentials(
+                provider_id, {"api_key": self.fabric_api_key_input.text()}
             )
         except Exception:
             self.fabric_provider_status_text.setText("Key was not saved. Check the field and secure storage.")
@@ -3618,7 +3878,7 @@ class RangeScoutWindow:
     def _on_delete_fabric_credentials(self) -> None:
         provider_id = self._selected_fabric_provider_id()
         try:
-            self.app.credential_store.delete(provider_id)
+            self.app.provider_configuration.delete_credentials(provider_id)
         except Exception:
             self.fabric_provider_status_text.setText("Stored key could not be deleted safely.")
         else:
@@ -3642,9 +3902,7 @@ class RangeScoutWindow:
     def _on_save_company_logo_key(self) -> None:
         value = self.logo_dev_publishable_key_input.text().strip()
         try:
-            self.app.credential_store.save(
-                ProviderCredentials("logo_dev", {"publishable_key": value})
-            )
+            self.app.provider_configuration.save_credentials("logo_dev", {"publishable_key": value})
         except Exception:
             self.company_logo_status_text.setText(
                 "Logo.dev key was not saved. Check the publishable key and secure storage."
@@ -3658,7 +3916,7 @@ class RangeScoutWindow:
 
     def _on_delete_company_logo_key(self) -> None:
         try:
-            self.app.credential_store.delete("logo_dev")
+            self.app.provider_configuration.delete_credentials("logo_dev")
         except Exception:
             self.company_logo_status_text.setText("Stored Logo.dev key could not be deleted safely.")
         else:
@@ -3685,6 +3943,35 @@ class RangeScoutWindow:
             if attribution is not None:
                 attribution.clear()
                 attribution.setVisible(False)
+
+    def _request_active_news(self) -> None:
+        if QThreadPool is None or not hasattr(self.market_data, "fetch_news"):
+            self._news_status_message = "No configured provider exposes an eligible news capability."
+            self._render_catalyst_news()
+            return
+        request = self.active_symbol.request()
+        task = _NewsTask(self.market_data, request)
+        task.signals.finished.connect(self._on_news_finished)
+        self._news_tasks[request.generation] = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_news_finished(self, request: SymbolRequest, result: Any, error: Any) -> None:
+        self._news_tasks.pop(request.generation, None)
+        if not self.active_symbol.is_current(request):
+            return
+        if error is not None:
+            message = str(error)
+            if "credentials" in message.lower() or "eligible" in message.lower():
+                self._news_status_message = "Finnhub news not configured; official sources were still checked."
+            else:
+                self._news_status_message = "Configured news source was unavailable; official sources were still checked."
+            self._provider_news_events = []
+        else:
+            payload = getattr(result, "payload", None)
+            self._provider_news_events = [item for item in (payload or []) if isinstance(item, CatalystEvent)]
+            provider = getattr(getattr(result, "metadata", None), "provider_name", "configured provider")
+            self._news_status_message = f"Checked {provider} and official sources."
+        self._render_catalyst_news()
 
     def _request_company_logo(self, symbol: str, exchange: str | None = None) -> None:
         if QThreadPool is None or not hasattr(self.app, "company_logo_service"):
@@ -4180,6 +4467,8 @@ class RangeScoutWindow:
         self._apply_bars_to_charts(self.current_bars)
         self._apply_history_presentation(self.current_bars, provider_name=provider_name or provider_id)
         if self.current_quote is not None and self.current_quote.instrument.identifier.symbol == request.symbol:
+            self._apply_quote_presentation(self.current_quote, refresh_collections=False)
+        if self.current_quote is not None and self.current_quote.instrument.identifier.symbol == request.symbol:
             self._symbol_snapshot_cache[request.symbol] = (
                 self.current_quote, tuple(self.current_bars), datetime.now(timezone.utc)
             )
@@ -4244,7 +4533,9 @@ class RangeScoutWindow:
         cached_at: datetime | None = None,
     ) -> None:
         self.current_quote = quote
-        presentation = directional_price(quote.last, quote.previous_close, quote.currency)
+        fused_close = previous_regular_close(quote, self.current_bars)
+        previous_close = fused_close.value
+        presentation = directional_price(quote.last, previous_close, quote.currency)
         self.price_text.setText(presentation.text)
         hero_color = presentation.color if presentation.color != "neutral" else (
             "#cbd5e1" if self._effective_theme == Theme.DARK else "#475569"
@@ -4266,12 +4557,14 @@ class RangeScoutWindow:
         sector = quote.instrument.sector or "Sector N/A"
         self.market_company_text.setText(f"{symbol}  •  {company}  •  {sector}")
         self._request_company_logo(symbol, exchange=quote.instrument.identifier.exchange)
-        if quote.previous_close not in (None, Decimal("0")):
-            dollar_change = quote.last - quote.previous_close
-            percent_change = (dollar_change / quote.previous_close) * Decimal("100")
+        if previous_close not in (None, Decimal("0")):
+            dollar_change = quote.last - previous_close
+            percent_change = (dollar_change / previous_close) * Decimal("100")
             arrow = "▲" if dollar_change > 0 else "▼" if dollar_change < 0 else "—"
             self.live_change_text.setText(f"{arrow} {dollar_change:+.2f} / {percent_change:+.2f}%")
-            self.market_change_text.setText(f"Regular session • previous close {quote.previous_close:,.2f} {quote.currency}")
+            self.market_change_text.setText(
+                f"Regular session • previous close {previous_close:,.2f} {quote.currency} • {fused_close.source}"
+            )
             color = presentation.color if presentation.color != "neutral" else ("#cbd5e1" if self._effective_theme == Theme.DARK else "#475569")
             neutral = "#94a3b8" if self._effective_theme == Theme.DARK else "#64748b"
             self.market_change_text.setStyleSheet(f"color: {neutral}; font-size: 10pt; font-weight: 600;")
@@ -4298,10 +4591,10 @@ class RangeScoutWindow:
         self.live_provider_text.setText(self.provider.provider_name)
         self.live_last_update_text.setText(f"{updated_at:%H:%M:%S} ET")
         change_text = "— N/A"
-        if quote.previous_close not in (None, Decimal("0")):
-            delta = quote.last - quote.previous_close
+        if previous_close not in (None, Decimal("0")):
+            delta = quote.last - previous_close
             arrow = "▲" if delta > 0 else "▼" if delta < 0 else "—"
-            change_text = f"{arrow} {delta:+.2f} • {delta / quote.previous_close * Decimal(100):+.2f}%"
+            change_text = f"{arrow} {delta:+.2f} • {delta / previous_close * Decimal(100):+.2f}%"
         self.research_quote_text.setText(f"{quote.last} {quote.currency} • {change_text}")
         if hasattr(self, "notes_hero_price"):
             self.notes_hero_price.setText(f"{quote.last} {quote.currency}  •  {change_text}")
@@ -4322,7 +4615,7 @@ class RangeScoutWindow:
         self.market_volume_text.setText(f"VOLUME\n{volume}\n\nAVERAGE VOLUME\n{average_volume}")
         self.market_cap_text.setText(f"MARKET CAP\n{market_cap}\n\nSHARES\nN/A")
         self.metrics_text.setText(
-            f"Previous close  {quote.previous_close if quote.previous_close is not None else 'N/A'}\n"
+            f"Previous close  {previous_close if previous_close is not None else 'N/A'} ({fused_close.source})\n"
             f"Day range  {day_range}\n52-week range  {year_range}\n"
             f"Volume  {volume}\nAverage volume  {average_volume}\nMarket cap  {market_cap}"
         )
@@ -4341,6 +4634,7 @@ class RangeScoutWindow:
                 f"Price  {presentation.text}\n"
                 f"Provider  {quote_provider_name}\nSetup  N/A until a scanner hit is selected"
             )
+            self._refresh_scanner_latest_row(quote)
         freshness = "Cached" if from_cache else freshness_label(
             freshness=quote.freshness, delay=quote.delay_label, received_at=quote.timestamp
         )
@@ -4630,10 +4924,27 @@ class RangeScoutWindow:
         self.app.persist_settings()
         self.root_layout.removeWidget(self.ticker_ribbon)
         if position == "top":
-            self.root_layout.insertWidget(1, self.ticker_ribbon)
+            self.root_layout.insertWidget(0, self.ticker_ribbon)
         elif position == "bottom":
-            self.root_layout.insertWidget(max(1, self.root_layout.count() - 1), self.ticker_ribbon)
+            self.root_layout.addWidget(self.ticker_ribbon)
         self.ticker_ribbon.setVisible(position != "hidden")
+
+    def _on_market_range_selected(self, days: int) -> None:
+        """Apply a mutually exclusive range immediately from local history, then enrich if needed."""
+        days = max(30, min(1095, int(days)))
+        for value, button in self.market_range_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(value == days)
+            button.blockSignals(False)
+        self.market_days_input.setValue(days)
+        cached = self.app.store.get_recent_bars_any_provider(self.current_symbol, limit=days)
+        if cached:
+            self.current_bars = cached
+            self._apply_bars_to_charts(cached)
+            self._apply_history_presentation(cached, provider_name=cached[-1].provider or "local cache", from_cache=True)
+            self.result_text.setText(f"Showing {len(cached)} cached {self.current_symbol} bars for the selected range.")
+        if len(cached) < min(days, 30) and self._auto_network_refresh:
+            self._request_active_history_refresh(force=True)
 
     def _on_watchlist_create_or_update(self) -> None:
         watchlist_id = self.watchlist_id_input.text().strip()
@@ -4672,6 +4983,25 @@ class RangeScoutWindow:
         self.watchlist_symbol_input.clear()
         self._refresh_ticker_ribbon()
 
+    def _on_add_active_symbol_to_watchlist(self) -> None:
+        records = self.watchlist_store.list()
+        selected_id = self.app.settings.selected_watchlist
+        record = next((item for item in records if item.id == selected_id), records[0] if records else None)
+        if record is None:
+            record = self.watchlist_store.create("my-watchlist", "My Watchlist")
+        already = self.current_symbol in record.symbols
+        self.watchlist_store.add_symbol(record.id, self.current_symbol)
+        self.app.settings = replace(self.app.settings, selected_watchlist=record.id)
+        self.app.persist_settings()
+        self._refresh_watchlists_widget()
+        self._refresh_ticker_ribbon()
+        if hasattr(self, "market_watchlist_button"):
+            self.market_watchlist_button.setText("✓ Watchlisted")
+            self.market_watchlist_button.setChecked(True)
+            self.market_watchlist_button.setToolTip(
+                f"{self.current_symbol} is already in {record.title}" if already else f"Added {self.current_symbol} to {record.title}"
+            )
+
     def _on_watchlist_remove_symbol(self) -> None:
         watchlist_id = self.watchlist_id_input.text().strip()
         symbol = self.watchlist_symbol_input.text().strip().upper()
@@ -4707,27 +5037,152 @@ class RangeScoutWindow:
         if record is not None and record.symbols:
             self.set_active_symbol(record.symbols[0], source="watchlist")
 
-    def _on_add_note(self) -> None:
+    def _note_title(self, category: str, symbol: str) -> str:
+        singular = {
+            "Trade Journal": "Trade Journal Entry", "Research Notes": "Research Note",
+            "Earnings Notes": "Earnings Note", "Catalyst Notes": "Catalyst Note", "General": "General Note",
+        }.get(category, category.rstrip("s"))
+        return f"{singular} for {symbol}"
+
+    def _on_note_text_changed(self) -> None:
+        if not self._loading_note_editor:
+            self._note_editor_dirty = True
+            if hasattr(self, "note_editor_mode"):
+                mode = "Edit Existing Note" if self._selected_note_id else "New Note"
+                self.note_editor_mode.setText(f"{mode} • Unsaved changes")
+
+    def _confirm_note_transition(self) -> bool:
+        if not self._note_editor_dirty:
+            return True
+        if QMessageBox is None:
+            return False
+        choice = QMessageBox.question(
+            self._qt_window, "Unsaved Note Changes",
+            "Save your note before changing selection? Choose Yes to save, No to discard, or Cancel to stay.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if choice == QMessageBox.StandardButton.Cancel:
+            return False
+        if choice == QMessageBox.StandardButton.Yes:
+            return self._on_save_note()
+        self._note_editor_dirty = False
+        return True
+
+    def _on_new_note(self, _checked: bool = False) -> None:
+        if not self._confirm_note_transition():
+            return
+        self._selected_note_id = None
+        self._loading_note_editor = True
+        self.notes_text.clear()
+        self._loading_note_editor = False
+        self._note_editor_dirty = False
+        self.note_editor_mode.setText("New Note")
+        self.note_editor_title.setText(self._note_title(self._active_note_category, self.notes_symbol_input.text().strip().upper()))
+        self.notes_list.clearSelection()
+
+    def _on_save_note(self, _checked: bool = False) -> bool:
         symbol = self.notes_symbol_input.text().strip().upper()
         body = self.notes_text.toPlainText().strip()
         if not symbol or not body:
-            return
-        self.note_store.add(symbol, body)
-        self.notes_text.clear()
-        self._on_reload_notes()
+            self.note_editor_mode.setText("Enter a linked symbol and note text before saving")
+            return False
+        if self._selected_note_id:
+            note = self.note_store.update(
+                self._selected_note_id, symbol=symbol, text=body, category=self._active_note_category
+            )
+        else:
+            note = self.note_store.add(symbol, body, self._active_note_category)
+            self._selected_note_id = note.id
+        self._note_editor_dirty = False
+        self._on_reload_notes(preserve_selection=True, bypass_unsaved=True)
+        self.note_editor_mode.setText("Edit Existing Note • Saved locally")
+        return True
 
-    def _on_reload_notes(self) -> None:
+    def _on_add_note(self) -> None:
+        self._on_save_note()
+
+    def _on_delete_note(self, _checked: bool = False) -> None:
+        if not self._selected_note_id:
+            return
+        if self._note_editor_dirty and not self._confirm_note_transition():
+            return
+        self.note_store.delete(self._selected_note_id)
+        self._selected_note_id = None
+        self._note_editor_dirty = False
+        self._on_reload_notes(bypass_unsaved=True)
+        self._on_new_note()
+
+    def _on_note_category_changed(self, category: str) -> None:
+        if not category or category == self._active_note_category:
+            return
+        if not self._confirm_note_transition():
+            return
+        self._active_note_category = category
+        self._selected_note_id = None
+        self._on_reload_notes(bypass_unsaved=True)
+        self._on_new_note()
+
+    def _on_note_selected(self, item: QListWidgetItem) -> None:
+        note_id = item.data(Qt.ItemDataRole.UserRole)
+        if not note_id or note_id == self._selected_note_id:
+            return
+        if not self._confirm_note_transition():
+            return
+        note = self.note_store.get(str(note_id))
+        if note is None:
+            self._on_reload_notes(bypass_unsaved=True)
+            return
+        self._selected_note_id = note.id
+        self._active_note_category = note.category
+        category_items = self.note_categories.findItems(note.category, Qt.MatchFlag.MatchExactly)
+        if category_items:
+            self.note_categories.blockSignals(True)
+            self.note_categories.setCurrentItem(category_items[0])
+            self.note_categories.blockSignals(False)
+        self._loading_note_editor = True
+        self.notes_symbol_input.setText(note.symbol)
+        self.notes_text.setPlainText(note.text)
+        self._loading_note_editor = False
+        self._note_editor_dirty = False
+        self.note_editor_title.setText(self._note_title(note.category, note.symbol))
+        self.note_editor_mode.setText("Edit Existing Note")
+
+    @staticmethod
+    def _human_note_time(value: str) -> str:
+        try:
+            stamp = datetime.fromisoformat(value)
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            local = stamp.astimezone(NEW_YORK)
+            return f"{local:%b} {local.day}, {local:%Y} · {local:%I:%M %p}".replace(" 0", " ")
+        except (TypeError, ValueError):
+            return "Date unavailable"
+
+    def _on_reload_notes(self, _checked: bool = False, *, preserve_selection: bool = False, bypass_unsaved: bool = False) -> None:
         if not hasattr(self, "notes_symbol_input") or not hasattr(self, "notes_list"):
             return
+        if not bypass_unsaved and self._note_editor_dirty and not self._confirm_note_transition():
+            return
+        self.note_store.reload()
+        selected = self._selected_note_id if preserve_selection else None
         self.notes_list.clear()
         symbol = self.notes_symbol_input.text().strip().upper()
         if not symbol:
             self.notes_list.addItem("Enter a symbol to view or add notes.")
             return
-        for note in self.note_store.list_for(symbol):
-            self.notes_list.addItem(f"{note.created_at} | {note.symbol}: {note.text}")
+        for note in self.note_store.list_for(symbol, self._active_note_category):
+            preview = " ".join(note.text.split())[:90]
+            item = QListWidgetItem(
+                f"{self._human_note_time(note.modified_at or note.created_at)}\n"
+                f"{note.category.rstrip('s')} · {note.symbol}\n{preview}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, note.id)
+            self.notes_list.addItem(item)
+            if note.id == selected:
+                self.notes_list.setCurrentItem(item)
         if self.notes_list.count() == 0:
-            self.notes_list.addItem("No notes yet for this symbol. Add your first note above.")
+            self.notes_list.addItem(f"No {self._active_note_category.lower()} yet for {symbol}. Choose New Note to create one.")
 
     def _on_alert_add(self) -> None:
         symbol = self.alert_symbol_input.text().strip().upper()
@@ -4873,7 +5328,8 @@ class RangeScoutWindow:
         if hasattr(self, "scanner_total_text"):
             self.scanner_total_text.setText(str(len(hits)))
         if not hits:
-            self.scanner_results.addItem("No current scanner hits in the permitted live universe.")
+            state = "All Live" if market_session_status(datetime.now(timezone.utc)).is_open else "Latest Available"
+            self.scanner_results.addItem(f"{state} — no rule matches yet; cached Active Symbol and watchlist quotes remain eligible.")
             if hasattr(self, "live_scanner_context"):
                 self.live_scanner_context.addItem("No current scanner hits in the permitted live universe.")
             return
@@ -4884,9 +5340,39 @@ class RangeScoutWindow:
             if hasattr(self, "live_scanner_context"):
                 self.live_scanner_context.addItem(item.clone())
 
+    def _refresh_scanner_latest_row(self, quote: QuoteSnapshot) -> None:
+        previous = previous_regular_close(quote, self.current_bars).value
+        change = quote.last - previous if previous not in (None, Decimal("0")) else None
+        percent = change / previous * Decimal("100") if change is not None and previous else None
+        row = ScannerRow(
+            symbol=quote.instrument.identifier.symbol,
+            company=quote.instrument.name or "Company name unavailable",
+            price=quote.last, change=change, change_percent=percent, volume=quote.volume,
+            day_high=quote.day_high, day_low=quote.day_low,
+            freshness=freshness_label(freshness=quote.freshness, delay=quote.delay_label, received_at=quote.timestamp),
+            sources=(self._fabric_provider_name(self._last_quote_provider_id),), updated_at=quote.timestamp,
+        )
+        self._scanner_rows = aggregate_scanner_rows([*getattr(self, "_scanner_rows", []), row])
+        self._render_scanner_rows()
+        if hasattr(self, "scanner_total_text"):
+            self.scanner_total_text.setText(str(len(self._scanner_rows)))
+
     def runtime_alert_notification(self, notification: AlertNotification) -> None:
-        text = f"{notification.alert_type.value.upper()} {notification.symbol or 'MARKET'}: {notification.message}"
-        self.alert_list.addItem(text)
+        event_label = humanize_event_code(notification.alert_type.value)
+        message = " ".join(humanize_event_code(part) if "_" in part and part.upper() == part else part for part in notification.message.split())
+        text = f"{event_label} · {notification.symbol or 'Market'} · {message} · {notification.occurred_at.astimezone(NEW_YORK):%b %d, %I:%M %p ET}"
+        market_types = {AlertType.TRADE_HALT, AlertType.TRADE_RESUME}
+        if notification.alert_type in market_types and hasattr(self, "market_alert_list"):
+            category = "Resumptions" if notification.alert_type == AlertType.TRADE_RESUME else "Trading Halts"
+            self._market_alert_records.append((category, notification.symbol or "", text))
+            self._render_market_alerts()
+            target = None
+        else:
+            target = self.alert_list
+        if target is not None:
+            if target.count() == 1 and target.item(0).text().startswith(("No current", "No active")):
+                target.clear()
+            target.addItem(text)
         if hasattr(self, "alert_history_list"):
             if self.alert_history_list.count() == 1 and self.alert_history_list.item(0).text().startswith("No alerts"):
                 self.alert_history_list.clear()
@@ -4895,6 +5381,19 @@ class RangeScoutWindow:
             if self.live_recent_alerts.count() == 1 and self.live_recent_alerts.item(0).text().startswith("No recent"):
                 self.live_recent_alerts.clear()
             self.live_recent_alerts.insertItem(0, text)
+
+    def _render_market_alerts(self, selected: str | None = None) -> None:
+        if not hasattr(self, "market_alert_list"):
+            return
+        selected = selected or (self.market_alert_filter.currentText() if hasattr(self, "market_alert_filter") else "All")
+        watched = set(self._watchlist_symbols())
+        self.market_alert_list.clear()
+        for category, symbol, text in self._market_alert_records:
+            if selected not in {"All", category} and not (selected == "Watchlist" and symbol in watched):
+                continue
+            self.market_alert_list.addItem(text)
+        if not self.market_alert_list.count():
+            self.market_alert_list.addItem("No current market notices match this filter from the checked official sources.")
 
     def runtime_alert_sound(self, notification: AlertNotification) -> None:  # noqa: ARG002
         if QApplication is not None:

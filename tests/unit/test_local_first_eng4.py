@@ -8,6 +8,7 @@ from threading import Event, get_ident
 from time import perf_counter, sleep
 import ast
 import inspect
+import json
 
 import pytest
 
@@ -218,10 +219,16 @@ def test_new_symbol_quote_bypasses_twenty_hung_history_and_slow_logo_research_jo
         while window.current_quote is None and perf_counter() - began < 4.0:
             qt.processEvents(); sleep(0.005)
         elapsed = perf_counter() - began
+        diagnostics = window.performance_diagnostics()
+        print(json.dumps({
+            "scenario": "20 history + 4 logo + 4 research jobs",
+            "quote_dispatch_delay_ms": round(float(diagnostics["quote_dispatch_delay_ms"]), 3),
+            "quote_wall_clock_ms": round(elapsed * 1000.0, 3),
+        }, sort_keys=True))
         assert window.current_quote is not None
         assert window.current_quote.instrument.identifier.symbol == "NVDA"
         assert elapsed <= 4.0
-        assert window.performance_diagnostics()["quote_dispatch_delay_ms"] < 500
+        assert diagnostics["quote_dispatch_delay_ms"] < 500
         assert not release.is_set()
     finally:
         release.set()

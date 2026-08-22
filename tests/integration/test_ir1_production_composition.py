@@ -116,7 +116,7 @@ def test_real_window_composition_streams_scans_alerts_polls_and_shuts_down(monke
     )
     window.live_refresh_timer.stop()
     try:
-        window.provider_combo.setCurrentText("finnhub")
+        window.provider_combo.setCurrentIndex(window.provider_combo.findData("finnhub"))
         window.runtime.live.update_snapshot("AAPL", Decimal("100"), Decimal("99"), NOW)
         transport = transports[-1]
         assert window.runtime.live.connection is not None
@@ -135,7 +135,7 @@ def test_real_window_composition_streams_scans_alerts_polls_and_shuts_down(monke
         assert window._ticker_identity_labels["AAPL"].text() == "AAPL"
         assert "122" in window._ticker_value_labels["AAPL"].text()
         assert any("unusual_volume" in window.scanner_results.item(i).text() for i in range(window.scanner_results.count()))
-        assert any("VOLUME_SPIKE" in window.alert_list.item(i).text() for i in range(window.alert_list.count()))
+        assert any("Volume Spike" in window.alert_list.item(i).text() for i in range(window.alert_list.count()))
 
         window.live_candle_interval.setCurrentIndex(window.live_candle_interval.findData(5))
         assert window.runtime.live._aggregator.interval_seconds == 5
@@ -199,7 +199,7 @@ def test_real_composition_routes_exact_ohlcv_candles_to_live_chart(monkeypatch, 
     )
     window.live_refresh_timer.stop()
     try:
-        window.provider_combo.setCurrentText("finnhub")
+        window.provider_combo.setCurrentIndex(window.provider_combo.findData("finnhub"))
         window.live_candle_interval.setCurrentIndex(window.live_candle_interval.findData(5))
         transport = transports[-1]
 

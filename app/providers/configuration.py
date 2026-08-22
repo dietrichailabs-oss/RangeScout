@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from app.providers.registry import ProviderRegistry
 from app.providers.public_policy import PUBLIC_CREDENTIAL_PROVIDER_IDS
@@ -20,11 +21,28 @@ class ProviderConfigurationStatus:
 
 
 class ProviderConfigurationService:
-    CREDENTIAL_PROVIDERS = PUBLIC_CREDENTIAL_PROVIDER_IDS | frozenset({"congress"})
+    CREDENTIAL_PROVIDERS = PUBLIC_CREDENTIAL_PROVIDER_IDS | frozenset(
+        {"twelve_data", "alpha_vantage", "fred", "congress", "logo_dev"}
+    )
 
     def __init__(self, registry: ProviderRegistry, credential_store: CredentialStore) -> None:
         self.registry = registry
         self.credential_store = credential_store
+        self._subscribers: list[Callable[[str, bool], None]] = []
+
+    def subscribe(self, callback: Callable[[str, bool], None]) -> Callable[[], None]:
+        self._subscribers.append(callback)
+        return lambda: self._subscribers.remove(callback) if callback in self._subscribers else None
+
+    def _notify(self, provider_id: str, configured: bool) -> None:
+        for callback in tuple(self._subscribers):
+            try:
+                callback(provider_id, configured)
+            except Exception:
+                # The secure write/delete has already succeeded. One optional
+                # view refresh must never roll the credential operation back
+                # or prevent the remaining subscribers from synchronizing.
+                continue
 
     def status(self, provider_id: str) -> ProviderConfigurationStatus:
         provider = self.registry.get(provider_id)
@@ -61,8 +79,11 @@ class ProviderConfigurationService:
         if provider_id not in self.CREDENTIAL_PROVIDERS:
             raise ValueError(f"Provider '{provider_id}' does not accept public credentials.")
         self.credential_store.save(ProviderCredentials(provider_id=provider_id, values=values))
+        self._notify(provider_id, True)
 
     def delete_credentials(self, provider_id: str) -> bool:
         if provider_id not in self.CREDENTIAL_PROVIDERS:
             return False
-        return self.credential_store.delete(provider_id)
+        deleted = self.credential_store.delete(provider_id)
+        self._notify(provider_id, False)
+        return deleted

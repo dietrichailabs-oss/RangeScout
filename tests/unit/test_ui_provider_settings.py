@@ -91,8 +91,14 @@ def test_provider_fabric_settings_disclose_keys_delays_and_disabled_candidates(t
         dialog = window._data_providers_dialog
         assert dialog is not None
         ids = {row.provider_id for row in dialog._rows}
+        unavailable_ids = {
+            str(dialog.unavailable_table.item(row, 0).text())
+            for row in range(dialog.unavailable_table.rowCount())
+        }
         assert {"coinbase_exchange", "kraken", "coinpaprika", "twelve_data", "alpha_vantage", "fred"} <= ids
-        assert {"google_finance_candidate", "msn_money_candidate", "binance_us_candidate"} <= ids
+        assert any(value.startswith("Google Finance") for value in unavailable_ids)
+        assert any(value.startswith("MSN Money") for value in unavailable_ids)
+        assert any(value.startswith("Binance.US") for value in unavailable_ids)
         twelve_row = next(index for index, row in enumerate(dialog._rows) if row.provider_id == "twelve_data")
         dialog.table.selectRow(twelve_row)
         assert "Missing API key" in dialog._rows[twelve_row].status
@@ -103,8 +109,11 @@ def test_provider_fabric_settings_disclose_keys_delays_and_disabled_candidates(t
         assert dialog.key_input.text() == ""
         assert next(row for row in dialog._rows if row.provider_id == "twelve_data").status == "Configured"
         assert secret not in (Path(application.data_dir) / "settings.json").read_text(encoding="utf-8")
-        disabled = next(row for row in dialog._rows if row.provider_id == "google_finance_candidate")
-        assert disabled.status.startswith("Disabled")
+        google_row = next(
+            row for row in range(dialog.unavailable_table.rowCount())
+            if dialog.unavailable_table.item(row, 0).text().startswith("Google Finance")
+        )
+        assert dialog.unavailable_table.item(google_row, 1).text().startswith("Disabled")
     finally:
         window._qt_window.close()
         if qt_app is not None and not qt_app.closingDown():

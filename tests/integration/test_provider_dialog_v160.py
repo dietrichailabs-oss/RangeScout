@@ -44,7 +44,9 @@ def test_provider_screen_owns_credentials_actions_and_signup_fallback(tmp_path, 
         assert dialog.parent() is window._qt_window
         assert dialog.windowTitle() == "Data Providers & API Keys"
         assert dialog.mode_combo.itemText(0) == "Smart Search (Recommended)"
-        assert dialog.table.rowCount() >= 16
+        # 1.6.2 keeps usable/configurable providers in the primary table and
+        # moves disabled/future sources into an explicit collapsed section.
+        assert dialog.table.rowCount() + dialog.unavailable_table.rowCount() >= 16
         assert window.settings_tab.findChildren(type(window.data_providers_btn), "open_data_providers_button") == [window.data_providers_btn]
         assert not window.settings_tab.findChildren(type(dialog.key_input), "provider_credential_input")
         assert window.congress_api_key_input not in window.settings_tab.findChildren(QLineEdit)

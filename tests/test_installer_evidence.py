@@ -8,10 +8,10 @@ from scripts.handoff.inno_installer_evidence import _accepted_display_name
 
 
 def test_inno_current_user_display_name_preserves_exact_product_and_version() -> None:
-    assert _accepted_display_name("RangeScout 1.6.1")
-    assert _accepted_display_name("RangeScout 1.6.1 (Current user)")
+    assert _accepted_display_name("RangeScout 1.6.2")
+    assert _accepted_display_name("RangeScout 1.6.2 (Current user)")
     assert not _accepted_display_name("RangeScout 1.2.0 (Current user)")
-    assert not _accepted_display_name("Other 1.6.1")
+    assert not _accepted_display_name("Other 1.6.2")
 
 
 def test_uninstall_passed_requires_zero_return_code() -> None:

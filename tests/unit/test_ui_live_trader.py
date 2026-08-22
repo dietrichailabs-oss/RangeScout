@@ -96,7 +96,7 @@ def test_catalyst_sidebar_shows_source_category_symbols_and_disclosure(window) -
     window.set_active_symbol("ACME", source="test")
     window.set_catalyst_events([CorrelatedEvent(event, "group")])
     text = window.catalyst_list.item(0).text()
-    assert "SEC" in text and "ACME" in text and "sec_filing" in text
+    assert "SEC" in text and "ACME" in text and "Sec Filing" in text
     assert "not price prediction" in window.catalyst_disclosure.text()
 
 

@@ -147,7 +147,7 @@ def test_production_catalog_bridges_yahoo_and_finnhub_without_mock_or_alpaca() -
     assert {"yahoo", "finnhub"} <= ids
     assert "mock" not in ids and "alpaca" not in ids
     assert Capability.HISTORICAL in registry.get("yahoo").descriptor.capabilities
-    assert registry.get("finnhub").descriptor.capabilities == frozenset({Capability.QUOTE})
+    assert registry.get("finnhub").descriptor.capabilities == frozenset({Capability.QUOTE, Capability.NEWS})
 
 
 def test_fabric_service_preserves_winner_provenance_and_unsupported_is_truthful() -> None:

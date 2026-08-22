@@ -92,7 +92,10 @@ def test_curated_peer_click_changes_entire_active_symbol_context(window) -> None
 def test_no_public_mock_provider_controls_are_present(window) -> None:
     provider_ids = [window.provider_combo.itemText(index).lower() for index in range(window.provider_combo.count())]
     settings_ids = [str(window.provider_settings_selector.itemData(index)).lower() for index in range(window.provider_settings_selector.count())]
-    assert provider_ids == ["yahoo", "finnhub"]
+    assert provider_ids[0] == "smart search (recommended)"
+    assert any("yahoo" in value for value in provider_ids)
+    assert any("finnhub" in value for value in provider_ids)
+    assert all("mock" not in value and "alpaca" not in value for value in provider_ids)
     assert settings_ids == ["yahoo", "finnhub"]
     visible_text = []
     for child in window._qt_window.findChildren(QWidget):

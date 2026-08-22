@@ -1,6 +1,6 @@
 name=RangeScout
-version=1.6.1
-build=rs-v1.6.1-quote-priority-eng2
+version=1.6.2
+build=rs-v1.6.2-ux-data-fusion-eng1
 git_tree=9f847804465f890fd60c00311d22759afe2e657d
 git_status=clean
 git_head=53c138b4a9dd1bb4bcfa5c8f37ec02d7425b27d3

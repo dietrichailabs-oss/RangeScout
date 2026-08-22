@@ -10,7 +10,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2563EB?style=for-the-badge"></a>
 </p>
 
-<h1 align="center">RangeScout 1.6.1 Engineering Candidate</h1>
+<h1 align="center">RangeScout 1.6.2 Engineering Candidate</h1>
 
 <p align="center">
   <strong>A Windows market intelligence workstation from Dietrich AI Labs.</strong><br>
@@ -20,7 +20,7 @@
 <p align="center"><strong>Publisher/company: Dietrich AI Labs</strong></p>
 
 > [!WARNING]
-> RangeScout 1.6.1 is an Engineering → Independent QA candidate and is not publicly released or approved. The download link below remains the frozen public release.
+> RangeScout 1.6.2 is an Engineering → Independent QA candidate and is not publicly released or approved. The download link below remains the frozen public release.
 
 <p align="center">
   <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.2.0_Windows.zip"><strong>⬇ Download for Windows</strong></a>
@@ -56,9 +56,9 @@
 
 ---
 
-## What's new in the 1.6.1 engineering candidate
+## What's new in the 1.6.2 engineering candidate
 
-RangeScout 1.6.1 reserves provider and executor capacity for the newly selected symbol's quote, coalesces rapid symbol changes, cancels superseded quote routing promptly, and uses quote-specific bounded network timeouts. These changes preserve the accepted 1.6.0 provider UX and local-first behavior.
+RangeScout 1.6.2 preserves the 1.6.1 quote-priority lane while adding offline company-name search, cleaned provider status, synchronized credentials, semantic financial formatting, normalized official catalysts and eligible Finnhub news, functional watchlist actions, human market alerts, progressive scanner rows, immediate chart-range controls, field-level previous-close fusion, and complete local Notes create/edit/reload/delete behavior. Missing provider data remains explicit and no value is fabricated.
 
 ## Preserved 1.6.0 provider platform
 

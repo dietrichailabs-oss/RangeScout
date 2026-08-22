@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from threading import Event
 
@@ -130,6 +130,21 @@ class FabricMarketDataService:
 
     def fetch_actions(self, identifier: InstrumentIdentifier) -> ProviderResult:  # noqa: ARG002
         raise ProviderUnavailable("Corporate actions are unavailable through the production fabric.")
+
+    def fetch_news(self, symbol: str, *, days: int = 7) -> ProviderResult:
+        instrument = self.resolve_instrument(symbol)
+        end = datetime.now(timezone.utc)
+        request = FabricRequest(
+            canonical_instrument_id=f"equity:{instrument.identifier.symbol}",
+            canonical_symbol=instrument.identifier.symbol,
+            asset_class=AssetClass.EQUITY,
+            capability=Capability.NEWS,
+            start=end - timedelta(days=max(1, min(days, 30))),
+            end=end,
+            caller_context="progressive-news-enrichment",
+        )
+        result = self.router.fetch(request, budget_seconds=8.0)
+        return self._provider_result(request, result)
 
     def capabilities_report(self) -> ProviderMetadata:
         return ProviderMetadata(

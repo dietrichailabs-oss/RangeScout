@@ -108,6 +108,40 @@ class _CredentialedProvider:
             raise ProviderUnavailable(f"{self.provider_name} returned an unexpected response.")
         return payload
 
+    def _query_json_list(
+        self,
+        url: str,
+        headers: Mapping[str, str],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        request = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": "RangeScout/1.6.2", **dict(headers)},
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds
+            ) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            raise ProviderUnavailable(
+                f"{self.provider_name} rejected the request (HTTP {exc.code}). Check credentials and provider access."
+            ) from None
+        except (urllib.error.URLError, TimeoutError):
+            raise ProviderUnavailable(
+                f"{self.provider_name} is unavailable. Check the network connection and try again."
+            ) from None
+        except Exception:
+            raise ProviderUnavailable(f"{self.provider_name} request failed safely.") from None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ProviderUnavailable(f"{self.provider_name} returned an invalid response.") from None
+        if not isinstance(payload, list):
+            raise ProviderUnavailable(f"{self.provider_name} returned an unexpected response.")
+        return [row for row in payload if isinstance(row, dict)]
+
     def fetch_actions(self, identifier: InstrumentIdentifier) -> ProviderResult:  # noqa: ARG002
         raise ProviderUnavailable(f"{self.provider_name} corporate-action retrieval is not supported in M1.")
 
@@ -167,6 +201,22 @@ class FinnhubProvider(_CredentialedProvider):
         raise ProviderUnavailable(
             "Finnhub free credentials do not provide the historical-candle entitlement used by this view. "
             "Select Yahoo for historical analysis."
+        )
+
+    def fetch_company_news(self, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Return official Finnhub company-news records without retaining article bodies."""
+        instrument = self.resolve_instrument(symbol)
+        credentials = self._credentials()
+        query = urllib.parse.urlencode(
+            {
+                "symbol": instrument.identifier.symbol,
+                "from": start.date().isoformat(),
+                "to": end.date().isoformat(),
+            }
+        )
+        return self._query_json_list(
+            f"https://finnhub.io/api/v1/company-news?{query}",
+            {"X-Finnhub-Token": credentials.values["api_key"]},
         )
 
     def capabilities_report(self) -> ProviderMetadata:

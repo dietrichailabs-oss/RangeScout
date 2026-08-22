@@ -110,6 +110,12 @@ def provider_rows(application: Any) -> list[ProviderRow]:
     return rows
 
 
+def split_provider_rows(rows: list[ProviderRow]) -> tuple[list[ProviderRow], list[ProviderRow]]:
+    unavailable = [row for row in rows if row.status == "Disabled / unsupported"]
+    active = [row for row in rows if row.status != "Disabled / unsupported"]
+    return active, unavailable
+
+
 class DataProvidersDialog(QDialog):
     """Single public surface for routing choice, provider state, and BYO credentials."""
 
@@ -172,6 +178,20 @@ class DataProvidersDialog(QDialog):
         self.table.setColumnWidth(4, 150)
         outer.addWidget(self.table, 1)
 
+        self.unavailable_toggle = QPushButton("Unavailable / Future Providers")
+        self.unavailable_toggle.setCheckable(True)
+        self.unavailable_toggle.setChecked(False)
+        self.unavailable_toggle.setObjectName("unavailable_providers_toggle")
+        self.unavailable_table = QTableWidget(0, 3)
+        self.unavailable_table.setObjectName("unavailable_provider_table")
+        self.unavailable_table.setHorizontalHeaderLabels(("Provider", "Status", "Reason"))
+        self.unavailable_table.verticalHeader().setVisible(False)
+        self.unavailable_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.unavailable_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.unavailable_table.setVisible(False)
+        outer.addWidget(self.unavailable_toggle)
+        outer.addWidget(self.unavailable_table)
+
         credential_group = QGroupBox("Selected Provider Credential")
         credential_form = QFormLayout(credential_group)
         self.selected_name = QLabel("Select a provider row")
@@ -216,12 +236,13 @@ class DataProvidersDialog(QDialog):
         self.delete_button.clicked.connect(self._delete)
         self.signup_button.clicked.connect(self._signup)
         self.details_button.clicked.connect(self._toggle_details)
+        self.unavailable_toggle.toggled.connect(self.unavailable_table.setVisible)
         self.refresh()
         self._mode_changed()
 
     def refresh(self) -> None:
         selected_id = self._selected_provider_id()
-        self._rows = provider_rows(self.application)
+        self._rows, unavailable = split_provider_rows(provider_rows(self.application))
         for row_index in range(self.table.rowCount()):
             widget = self.table.cellWidget(row_index, 4)
             if widget is not None:
@@ -250,6 +271,11 @@ class DataProvidersDialog(QDialog):
                 self.table.selectRow(row_index)
         if not self.table.selectedItems() and self._rows:
             self.table.selectRow(0)
+        self.unavailable_toggle.setText(f"Unavailable / Future Providers ({len(unavailable)})")
+        self.unavailable_table.setRowCount(len(unavailable))
+        for row_index, row in enumerate(unavailable):
+            for column, value in enumerate((row.name, row.status, row.details or "Pending provider/terms review")):
+                self.unavailable_table.setItem(row_index, column, QTableWidgetItem(value))
 
     def _mode_changed(self, _index: int = 0) -> None:
         provider_id = str(self.mode_combo.currentData() or SMART_PROVIDER_MODE)
@@ -308,7 +334,7 @@ class DataProvidersDialog(QDialog):
         value = self.key_input.text().strip()
         field = "publishable_key" if provider_id == "logo_dev" else "api_key"
         try:
-            self.application.credential_store.save(ProviderCredentials(provider_id, {field: value}))
+            self.application.provider_configuration.save_credentials(provider_id, {field: value})
         except Exception:
             self.credential_status.setText("Key was not saved. Check the value and Windows secure storage.")
         else:
@@ -320,7 +346,7 @@ class DataProvidersDialog(QDialog):
     def _delete(self) -> None:
         provider_id = self._selected_provider_id()
         try:
-            self.application.credential_store.delete(provider_id)
+            self.application.provider_configuration.delete_credentials(provider_id)
         except Exception:
             self.credential_status.setText("Stored key could not be deleted safely.")
         else:
