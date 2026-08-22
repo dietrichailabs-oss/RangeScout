@@ -38,12 +38,7 @@ def provision_company_master(target_database: Path | str, master_database: Path 
         source.row_factory = sqlite3.Row
         version_row = source.execute("SELECT value FROM master_meta WHERE key='version'").fetchone()
         version = int(version_row[0]) if version_row else 0
-        records = source.execute("SELECT * FROM seed_instruments ORDER BY canonical_symbol").fetchall()
-        aliases = source.execute("SELECT * FROM seed_aliases ORDER BY canonical_symbol,alias_symbol").fetchall()
-        snapshots = source.execute("SELECT * FROM source_snapshots ORDER BY source_id").fetchall()
-        references = source.execute(
-            "SELECT * FROM seed_instrument_sources ORDER BY canonical_symbol,primary_venue,asset_class,source_id"
-        ).fetchall()
+        available = int(source.execute("SELECT COUNT(*) FROM seed_instruments").fetchone()[0])
 
     with closing(sqlite3.connect(target, timeout=15)) as destination:
         destination.row_factory = sqlite3.Row
@@ -56,10 +51,18 @@ def provision_company_master(target_database: Path | str, master_database: Path 
         ).fetchone()
         current = int(current_row[0]) if current_row else 0
         if current >= version:
-            return CompanyMasterProvisionReport(str(master), version, len(records), 0, 0, True)
+            return CompanyMasterProvisionReport(str(master), version, available, 0, 0, True)
         instrument_count = destination.execute("SELECT COUNT(*) FROM rs_instruments").fetchone()[0]
         if instrument_count == 0:
-            return _bulk_provision_empty(destination, master, version, len(records))
+            return _bulk_provision_empty(destination, master, version, available)
+        with closing(sqlite3.connect(master)) as source:
+            source.row_factory = sqlite3.Row
+            records = source.execute("SELECT * FROM seed_instruments ORDER BY canonical_symbol").fetchall()
+            aliases = source.execute("SELECT * FROM seed_aliases ORDER BY canonical_symbol,alias_symbol").fetchall()
+            snapshots = source.execute("SELECT * FROM source_snapshots ORDER BY source_id").fetchall()
+            references = source.execute(
+                "SELECT * FROM seed_instrument_sources ORDER BY canonical_symbol,primary_venue,asset_class,source_id"
+            ).fetchall()
         destination.execute("BEGIN IMMEDIATE")
         for row in snapshots:
             destination.execute(
@@ -144,6 +147,9 @@ def _bulk_provision_empty(
 ) -> CompanyMasterProvisionReport:
     """Use set-based SQLite copies for the clean-install path; populated DBs keep the additive merge."""
     destination.execute("ATTACH DATABASE ? AS seed_master", (str(master),))
+    destination.execute("PRAGMA cache_size = -65536")
+    destination.execute("PRAGMA locking_mode = EXCLUSIVE")
+    destination.execute("PRAGMA synchronous = OFF")
     try:
         destination.execute("BEGIN IMMEDIATE")
         deferred_indexes = destination.execute(
@@ -204,6 +210,9 @@ def _bulk_provision_empty(
         for _name, sql in deferred_indexes:
             destination.execute(str(sql))
         destination.commit()
+        if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise sqlite3.DatabaseError("company master seed integrity check failed")
+        destination.execute("PRAGMA synchronous = NORMAL")
     except Exception:
         destination.rollback()
         raise
