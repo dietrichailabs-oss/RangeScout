@@ -146,6 +146,14 @@ def _bulk_provision_empty(
     destination.execute("ATTACH DATABASE ? AS seed_master", (str(master),))
     try:
         destination.execute("BEGIN IMMEDIATE")
+        deferred_indexes = destination.execute(
+            """SELECT name,sql FROM sqlite_master
+               WHERE type='index' AND sql IS NOT NULL
+                 AND tbl_name IN ('rs_instruments','rs_instrument_aliases','rs_instrument_reference_sources')
+               ORDER BY name"""
+        ).fetchall()
+        for name, _sql in deferred_indexes:
+            destination.execute(f'DROP INDEX "{str(name).replace(chr(34), chr(34) * 2)}"')
         destination.execute(
             """INSERT OR IGNORE INTO rs_discovery_sources(
                source_id,display_name,source_kind,official_url,enabled,refresh_interval_seconds,
@@ -193,6 +201,8 @@ def _bulk_provision_empty(
             "INSERT OR REPLACE INTO rs_schema_meta(key,value,updated_at_utc) VALUES('company_master_seed_version',?,?)",
             (str(version), seeded_at or "2026-08-21T00:00:00+00:00"),
         )
+        for _name, sql in deferred_indexes:
+            destination.execute(str(sql))
         destination.commit()
     except Exception:
         destination.rollback()
