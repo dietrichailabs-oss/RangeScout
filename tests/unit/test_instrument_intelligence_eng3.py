@@ -53,7 +53,7 @@ def test_acceptance_searches_return_canonical_disambiguated_instruments(tmp_path
         "BOE": "BOE", "BlackRock Enhanced": "BOE",
         "Gold": "GOLD", "Gold Spot": "XAU/USD", "XAU": "XAU/USD",
         "XAUUSD": "XAU/USD", "XAU/USD": "XAU/USD",
-        "Dow Jones": "^DJI", "Dow": "^DJI", "Dow 30": "^DJI", "DJIA": "^DJI",
+        "Dow Jones": "^DJI", "Dow": "DOW", "Dow 30": "^DJI", "DJIA": "DJIA",
         "S&P 500": "^GSPC", "SP500": "^GSPC", "SPX": "^GSPC",
         "Nasdaq Composite": "^IXIC", "Bitcoin": "BTC/USD",
     }
@@ -64,7 +64,7 @@ def test_acceptance_searches_return_canonical_disambiguated_instruments(tmp_path
         assert match.instrument.instrument_id > 0
         assert match.display_text.count("·") == 3
     assert resolver.resolve_unique("Nasdaq").symbol == "^IXIC"
-    assert resolver.resolve_unique("Gold").instrument.provider_symbols == {"twelve_data": "XAU/USD"}
+    assert resolver.resolve_unique("Gold Spot").instrument.provider_symbols == {"twelve_data": "XAU/USD"}
 
 
 def test_provider_discovery_enrichment_is_generic_and_cached(tmp_path: Path) -> None:
