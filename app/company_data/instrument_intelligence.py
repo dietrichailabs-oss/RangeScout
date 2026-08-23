@@ -14,12 +14,70 @@ from typing import Callable, Iterable, Mapping
 
 _SPACE = re.compile(r"[^a-z0-9]+")
 _SUFFIX = re.compile(r"\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group)\b\.?,?", re.I)
-_REFERENCE_VERSION = 1
+_SECURITY_DESCRIPTORS = re.compile(
+    r"\b(?:the|new|common stock|common shares?(?: of beneficial interest)?|ordinary shares?|"
+    r"class [a-z]|preferred(?: stock| shares?)?|depositary shares?|depositary receipts?|"
+    r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
+    re.I,
+)
+_REFERENCE_VERSION = 2
 _REFERENCE_TIME = "2026-08-22T00:00:00+00:00"
 
 
 def normalize_search_text(value: object) -> str:
     return _SPACE.sub(" ", _SUFFIX.sub(" ", str(value or "")).lower()).strip()
+
+
+def normalize_issuer_name(value: object) -> str:
+    """Normalize an official listing name down to issuer intent, not security series."""
+
+    return _SPACE.sub(" ", _SECURITY_DESCRIPTORS.sub(" ", _SUFFIX.sub(" ", str(value or "")).lower())).strip()
+
+
+def canonical_asset_class(asset_class: object, subtype: object = "", security_type: object = "", name: object = "") -> str:
+    """Map legacy master labels to the canonical fabric taxonomy without guessing from symbols."""
+
+    asset = str(asset_class or "unknown").strip().lower().replace(" ", "_")
+    detail = " ".join((str(subtype or ""), str(security_type or ""), str(name or ""))).lower()
+    if str(subtype or "").strip().lower() == "closed_end_fund":
+        return "closed_end_fund"
+    if asset in {"stock", "common_stock"}:
+        if "preferred" in detail or "depositary share" in detail:
+            return "preferred"
+        if _looks_like_closed_end_fund(str(name or ""), str(security_type or "")):
+            return "closed_end_fund"
+        return "equity"
+    aliases = {
+        "exchange_traded_fund": "etf", "closed-end_fund": "closed_end_fund",
+        "physical_currency": "fx", "digital_currency": "crypto_spot",
+        "commodity": "commodity_spot", "precious_metal_spot": "commodity_spot",
+    }
+    return aliases.get(asset, asset)
+
+
+def _looks_like_closed_end_fund(name: str, security_type: str = "") -> bool:
+    factual = f"{name} {security_type}".upper()
+    if "CLOSED-END FUND" in factual or "CLOSED END FUND" in factual:
+        return True
+    fund_terms = (" FUND", " ENHANCED ", " DIVIDEND ", " INCOME ", " MUNICIPAL ", " CREDIT ", " OPPORTUNITIES ")
+    return "COMMON SHARES OF BENEFICIAL INTEREST" in factual and any(term in f" {factual} " for term in fund_terms)
+
+
+def _security_role(asset_class: str, subtype: str, security_type: str, symbol: str, name: str) -> str:
+    asset = canonical_asset_class(asset_class, subtype, security_type, name)
+    detail = f"{subtype} {security_type} {name}".lower()
+    symbol_variant = bool(re.search(r"[-./]P[A-Z]?$", symbol, re.I))
+    if asset == "equity" and "common stock" in detail and not symbol_variant and not re.search(
+        r"(?:\bpreferred\b|\bwarrant\b|\bright\b|\bnote\b)", detail, re.I
+    ):
+        return "primary_common"
+    if asset in {"preferred", "warrant", "right", "unit", "etn"} or symbol_variant or re.search(
+        r"(?:\bpreferred\b|\bdepositary share\b|\bwarrant\b|\bright\b|\bnote\b)", detail, re.I,
+    ):
+        return "alternate_security"
+    if asset in {"etf", "closed_end_fund", "mutual_fund"}:
+        return "fund"
+    return "other"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +134,8 @@ _REFERENCE_INSTRUMENTS = (
      ("Nasdaq", "Nasdaq Composite"), {"yahoo": "^IXIC"}),
     ("XAU/USD", "Gold Spot / U.S. Dollar", "commodity_spot", "precious_metal_spot", "OTC SPOT", "USD", 100,
      ("Gold", "Gold Spot", "XAU", "XAUUSD", "XAU/USD"), {"twelve_data": "XAU/USD"}),
+    ("EUR/USD", "Euro / U.S. Dollar", "fx", "physical_currency_pair", "OTC FX", "USD", 95,
+     ("EURUSD", "EUR/USD", "Euro Dollar", "Euro / U.S. Dollar"), {"twelve_data": "EUR/USD"}),
     ("BTC/USD", "Bitcoin / U.S. Dollar", "crypto_spot", "crypto_spot_pair", "MULTI", "USD", 90,
      ("Bitcoin", "BTC", "BTCUSD", "BTC-USD"), {"coinbase": "BTC-USD", "kraken": "XBTUSD", "yahoo": "BTC-USD"}),
 )
@@ -161,11 +221,17 @@ class InstrumentReferenceSeeder:
                 ).fetchall()
                 for row in rows[:1]:
                     self._insert_alias(con, int(row[0]), alias, venue, kind, 35)
-            con.execute(
-                """UPDATE rs_instruments SET instrument_subtype='closed_end_fund', search_priority=40,
-                   metadata_source='official_listing_name_classification', metadata_verified_utc=?
-                   WHERE canonical_symbol='BOE' AND primary_venue='NYSE'""", (_REFERENCE_TIME,)
-            )
+            rows = con.execute(
+                "SELECT instrument_id,security_name,security_type FROM rs_instruments WHERE is_active=1"
+            ).fetchall()
+            for row in rows:
+                if _looks_like_closed_end_fund(str(row["security_name"] or ""), str(row["security_type"] or "")):
+                    con.execute(
+                        """UPDATE rs_instruments SET instrument_subtype='closed_end_fund',search_priority=MAX(search_priority,40),
+                           metadata_source='official_listing_name_classification',metadata_verified_utc=?
+                           WHERE instrument_id=?""",
+                        (_REFERENCE_TIME, int(row["instrument_id"])),
+                    )
             con.execute(
                 "INSERT OR REPLACE INTO rs_schema_meta(key,value,updated_at_utc) VALUES('instrument_reference_version',?,?)",
                 (str(_REFERENCE_VERSION), _REFERENCE_TIME),
@@ -203,6 +269,7 @@ class InstrumentResolver:
             return []
         upper, normalized = raw.upper(), normalize_search_text(raw)
         token = f"%{raw}%"
+        compact = "%" + re.sub(r"[^A-Z0-9]", "", upper) + "%"
         with closing(sqlite3.connect(self.path, timeout=10)) as con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
@@ -213,8 +280,11 @@ class InstrumentResolver:
                    WHERE UPPER(i.canonical_symbol)=? OR UPPER(COALESCE(a.alias_symbol,''))=?
                       OR i.security_name LIKE ? COLLATE NOCASE OR i.canonical_symbol LIKE ? COLLATE NOCASE
                       OR COALESCE(a.alias_symbol,'') LIKE ? COLLATE NOCASE
-                   GROUP BY i.instrument_id ORDER BY i.is_active DESC,i.search_priority DESC LIMIT 350""",
-                (upper, upper, token, f"{raw}%", f"{raw}%"),
+                      OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(i.security_name),' ',''),'-',''),'.',''),',',''),'&','') LIKE ?
+                   GROUP BY i.instrument_id ORDER BY i.is_active DESC,
+                     CASE WHEN UPPER(COALESCE(i.security_type,''))='COMMON STOCK' THEN 0 ELSE 1 END,
+                     i.search_priority DESC LIMIT 1000""",
+                (upper, upper, token, f"{raw}%", f"{raw}%", compact),
             ).fetchall()
             matches = [self._match(con, row, raw, upper, normalized) for row in rows]
         ranked = [item for item in matches if item.score > 0]
@@ -228,6 +298,15 @@ class InstrumentResolver:
         first, second = results[0], results[1] if len(results) > 1 else None
         if first.match_kind in {"exact_symbol", "exact_alias"}:
             return first
+        first_role = _security_role(first.instrument.asset_class, first.instrument.subtype, "", first.symbol, first.name)
+        if first_role == "alternate_security":
+            return None
+        if second is not None:
+            first_issuer = normalize_issuer_name(first.name)
+            second_issuer = normalize_issuer_name(second.name)
+            second_role = _security_role(second.instrument.asset_class, second.instrument.subtype, "", second.symbol, second.name)
+            if first_role == second_role == "primary_common" and first_issuer and first_issuer == second_issuer:
+                return None
         if first.score >= 930 and (second is None or first.score - second.score >= 70):
             return first
         if first.score >= 760 and (second is None or first.score - second.score >= 150):
@@ -248,19 +327,26 @@ class InstrumentResolver:
             for item in rows:
                 symbol = str(item.get("canonical_symbol") or item.get("symbol") or "").strip().upper()
                 name = str(item.get("name") or symbol).strip()
-                asset = str(item.get("asset_class") or "unknown").strip().lower()
+                asset = canonical_asset_class(
+                    item.get("asset_class"), item.get("subtype"), item.get("instrument_type"), item.get("name")
+                )
                 venue = str(item.get("venue") or "").strip().upper()
                 provider_symbol = str(item.get("provider_symbol") or symbol).strip()
                 if not symbol or not provider_symbol:
                     continue
                 now = str(item.get("verified_at_utc") or _REFERENCE_TIME)
                 con.execute(
-                    """INSERT INTO rs_instruments(canonical_symbol,security_name,asset_class,primary_venue,is_active,
-                       first_seen_utc,last_seen_utc,created_at_utc,updated_at_utc,metadata_source,metadata_verified_utc)
-                       VALUES(?,?,?,?,1,?,?,?,?,?,?) ON CONFLICT(canonical_symbol,primary_venue,asset_class)
-                       DO UPDATE SET security_name=excluded.security_name,last_seen_utc=excluded.last_seen_utc,
-                       metadata_source=excluded.metadata_source,metadata_verified_utc=excluded.metadata_verified_utc""",
-                    (symbol, name, asset, venue, now, now, now, now, f"provider_discovery:{provider_id}", now),
+                    """INSERT INTO rs_instruments(canonical_symbol,security_name,asset_class,security_type,primary_venue,
+                       currency,is_active,first_seen_utc,last_seen_utc,created_at_utc,updated_at_utc,metadata_source,
+                       metadata_verified_utc,instrument_subtype)
+                       VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?) ON CONFLICT(canonical_symbol,primary_venue,asset_class)
+                       DO UPDATE SET security_name=excluded.security_name,security_type=excluded.security_type,
+                       currency=excluded.currency,last_seen_utc=excluded.last_seen_utc,
+                       metadata_source=excluded.metadata_source,metadata_verified_utc=excluded.metadata_verified_utc,
+                       instrument_subtype=excluded.instrument_subtype""",
+                    (symbol, name, asset, str(item.get("instrument_type") or ""), venue,
+                     str(item.get("currency") or "USD").upper(), now, now, now, now,
+                     f"provider_discovery:{provider_id}", now, str(item.get("subtype") or "")),
                 )
                 instrument_id = con.execute(
                     "SELECT instrument_id FROM rs_instruments WHERE canonical_symbol=? AND primary_venue=? AND asset_class=?",
@@ -283,6 +369,13 @@ class InstrumentResolver:
         aliases = [value for value in str(row["aliases"] or "").split("|") if value]
         alias_upper = {value.upper() for value in aliases}
         name_norm = normalize_search_text(name)
+        issuer_norm = normalize_issuer_name(name)
+        normalized_compact = normalized.replace(" ", "")
+        issuer_compact = issuer_norm.replace(" ", "")
+        security_type = str(row["security_type"] or "")
+        subtype = str(row["instrument_subtype"] or "")
+        canonical_asset = canonical_asset_class(str(row["asset_class"] or ""), subtype, security_type, name)
+        role = _security_role(canonical_asset, subtype, security_type, symbol, name)
         priority = int(row["search_priority"] or 0) + int(row["alias_boost"] or 0)
         if upper == symbol:
             score, kind, matched = 1200, "exact_symbol", symbol
@@ -290,8 +383,12 @@ class InstrumentResolver:
             score, kind, matched = 1140, "exact_alias", next(v for v in aliases if v.upper() == upper)
         elif raw.casefold() == name.casefold():
             score, kind, matched = 1080, "exact_name", name
+        elif normalized and (normalized == issuer_norm or normalized_compact == issuer_compact):
+            score, kind, matched = 1040, "issuer_name", name
         elif normalized and normalized == name_norm:
             score, kind, matched = 1020, "normalized_name", name
+        elif normalized and (issuer_norm.startswith(normalized) or issuer_compact.startswith(normalized_compact)):
+            score, kind, matched = 860 - min(100, len(issuer_compact) - len(normalized_compact)), "issuer_prefix", name
         elif normalized and name_norm.startswith(normalized):
             score, kind, matched = 860 - min(100, len(name_norm) - len(normalized)), "name_prefix", name
         elif symbol.startswith(upper):
@@ -301,7 +398,15 @@ class InstrumentResolver:
         else:
             ratio = SequenceMatcher(None, normalized, name_norm).ratio() if len(normalized) >= 4 else 0
             score, kind, matched = (int(560 * ratio), "fuzzy", name) if ratio >= .86 else (0, "none", "")
-        return InstrumentMatch(self._instrument(con, row), score + priority + (5 if row["is_active"] else 0), kind, matched)
+        intent_adjustment = (
+            0 if kind in {"exact_symbol", "exact_alias"}
+            else 190 if role == "primary_common"
+            else -260 if role == "alternate_security"
+            else 0
+        )
+        return InstrumentMatch(
+            self._instrument(con, row), score + priority + intent_adjustment + (5 if row["is_active"] else 0), kind, matched
+        )
 
     @staticmethod
     def _instrument(con: sqlite3.Connection, row: sqlite3.Row) -> CanonicalInstrument:
@@ -313,7 +418,9 @@ class InstrumentResolver:
         capabilities = {str(r[0]): str(r[1]) for r in con.execute(
             "SELECT capability,applicability FROM rs_instrument_capabilities WHERE instrument_id=?", (instrument_id,)
         )}
+        name = str(row["security_name"] or row["canonical_symbol"])
+        subtype = str(row["instrument_subtype"] or row["security_type"] or "")
+        asset = canonical_asset_class(row["asset_class"], subtype, row["security_type"], name)
         return CanonicalInstrument(instrument_id, str(row["canonical_symbol"]).upper(),
-            str(row["security_name"] or row["canonical_symbol"]), str(row["primary_venue"] or "N/A"),
-            str(row["asset_class"] or "unknown"), str(row["instrument_subtype"] or row["security_type"] or ""),
+            name, str(row["primary_venue"] or "N/A"), asset, subtype,
             str(row["currency"] or "USD"), mappings, capabilities)

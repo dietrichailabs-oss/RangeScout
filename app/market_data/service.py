@@ -61,14 +61,17 @@ class FabricMarketDataService:
         return None if self.provider_mode == "smart" else self.provider_mode
 
     @staticmethod
-    def resolve_instrument(symbol: str) -> Instrument:
+    def resolve_instrument(
+        symbol: str, *, asset_class: AssetClass | None = None, exchange: str | None = None,
+    ) -> Instrument:
         normalized = symbol.strip().upper()
         if not normalized:
             raise ValueError("Symbol is required.")
+        canonical_class = asset_class or infer_asset_class(normalized)
         return Instrument(
-            identifier=InstrumentIdentifier(normalized),
+            identifier=InstrumentIdentifier(normalized, exchange),
             name=normalized,
-            asset_type=AssetType.STOCK,
+            asset_type=_model_asset_type(canonical_class),
             currency="USD",
             provider="fabric",
         )
@@ -82,8 +85,8 @@ class FabricMarketDataService:
         provider_symbols: tuple[tuple[str, str], ...] = (),
         cancellation_event: Event | None = None,
     ) -> ProviderResult:
-        instrument = self.resolve_instrument(symbol)
-        asset_class = asset_class or infer_asset_class(instrument.identifier.symbol)
+        asset_class = asset_class or infer_asset_class(symbol)
+        instrument = self.resolve_instrument(symbol, asset_class=asset_class)
         request = FabricRequest(
             canonical_instrument_id=canonical_instrument_id or f"{asset_class.value}:{instrument.identifier.symbol}",
             canonical_symbol=instrument.identifier.symbol,
@@ -111,11 +114,14 @@ class FabricMarketDataService:
         adjusted: AdjustmentMode = AdjustmentMode.RAW,
         *,
         asset_class: AssetClass | None = None,
+        canonical_instrument_id: str | None = None,
+        provider_symbols: tuple[tuple[str, str], ...] = (),
+        cancellation_event: Event | None = None,
         interval: str = "1day",
     ) -> ProviderResult:
         asset_class = asset_class or infer_asset_class(identifier.symbol)
         request = FabricRequest(
-            canonical_instrument_id=f"{asset_class.value}:{identifier.symbol.upper()}",
+            canonical_instrument_id=canonical_instrument_id or f"{asset_class.value}:{identifier.symbol.upper()}",
             canonical_symbol=identifier.symbol.upper(),
             asset_class=asset_class,
             capability=Capability.HISTORICAL,
@@ -125,10 +131,14 @@ class FabricMarketDataService:
             interval=interval,
             adjustment=adjusted.value,
             caller_context="production-ui",
+            provider_symbol_overrides=tuple(provider_symbols),
         )
         # History is independent/background work and receives a separate budget.
         return self._provider_result(
-            request, self.router.fetch(request, budget_seconds=15.0, forced_provider_id=self._forced_provider_id())
+            request, self.router.fetch(
+                request, budget_seconds=15.0, forced_provider_id=self._forced_provider_id(),
+                cancellation_event=cancellation_event,
+            )
         )
 
     def fetch_actions(self, identifier: InstrumentIdentifier) -> ProviderResult:  # noqa: ARG002
@@ -203,11 +213,13 @@ class FabricMarketDataService:
             volume = int(Decimal(str(raw_volume))) if raw_volume not in (None, "") else None
         except Exception:
             volume = None
-        instrument = self.resolve_instrument(request.canonical_symbol)
+        instrument = self.resolve_instrument(
+            request.canonical_symbol, asset_class=request.asset_class, exchange=request.venue
+        )
         instrument = Instrument(
             identifier=instrument.identifier,
             name=instrument.name,
-            asset_type=instrument.asset_type,
+            asset_type=_model_asset_type(request.asset_class),
             currency=result.currency,
             provider=result.provider_id,
         )
@@ -273,14 +285,41 @@ def _bar_datetime(row: dict[str, object]) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+_FIAT_CODES = frozenset({"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "CNY", "HKD", "SGD", "MXN", "BRL", "INR"})
+_CRYPTO_CODES = frozenset({"BTC", "XBT", "ETH", "SOL", "XRP", "DOGE", "ADA", "USDT", "USDC"})
+_METAL_CODES = frozenset({"XAU", "XAG", "XPT", "XPD"})
+
+
+def _model_asset_type(asset_class: AssetClass) -> AssetType:
+    return {
+        AssetClass.EQUITY: AssetType.STOCK,
+        AssetClass.ADR: AssetType.STOCK,
+        AssetClass.OTC: AssetType.STOCK,
+        AssetClass.PREFERRED: AssetType.PREFERRED,
+        AssetClass.ETF: AssetType.ETF,
+        AssetClass.CLOSED_END_FUND: AssetType.CLOSED_END_FUND,
+        AssetClass.INDEX: AssetType.INDEX,
+        AssetClass.COMMODITY_SPOT: AssetType.COMMODITY_SPOT,
+        AssetClass.FUTURE: AssetType.FUTURE,
+        AssetClass.FX: AssetType.FOREX,
+        AssetClass.CRYPTO_SPOT: AssetType.CRYPTO,
+    }.get(asset_class, AssetType.UNKNOWN)
+
+
 def infer_asset_class(symbol: str) -> AssetClass:
-    normalized = symbol.strip().upper().replace("/", "-")
+    """Legacy fallback only; canonical callers must pass their resolved class explicitly."""
+
+    normalized = symbol.strip().upper().replace("=X", "").replace("/", "-")
     if normalized.startswith("^"):
         return AssetClass.INDEX
-    if normalized.endswith("=X"):
-        return AssetClass.FX
     if "-" in normalized:
         base, quote = normalized.rsplit("-", 1)
-        if base and quote in {"USD", "USDT", "USDC", "EUR", "BTC", "ETH"}:
+        if base in _METAL_CODES and quote in _FIAT_CODES:
+            return AssetClass.COMMODITY_SPOT
+        if base in _FIAT_CODES and quote in _FIAT_CODES:
+            return AssetClass.FX
+        if base in _CRYPTO_CODES or quote in _CRYPTO_CODES:
             return AssetClass.CRYPTO_SPOT
+    if symbol.strip().upper().endswith("=X") and len(normalized) == 6:
+        return AssetClass.FX
     return AssetClass.EQUITY

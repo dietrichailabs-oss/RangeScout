@@ -173,6 +173,18 @@ class LiveTradingRuntime:
     def update_snapshot(self, symbol: str, price: Decimal, previous_close: Decimal | None, timestamp: datetime | None) -> None:
         normalized = symbol.strip().upper()
         prior = self._states.get(normalized, LiveSymbolState(normalized))
+        # A connected trade stream is the live-price authority. Snapshot
+        # refreshes may still improve previous-close context, but must not
+        # replace a streaming tick (or its candle/indicator state) with a REST
+        # quote that happens to complete later.
+        if self._provider in STREAM_LIMITS and prior.feed_state == "CONNECTED" and prior.price is not None:
+            state = replace(
+                prior,
+                previous_close=previous_close if previous_close is not None else prior.previous_close,
+            )
+            self._states[normalized] = state
+            self._publish(state)
+            return
         state = LiveSymbolState(
             symbol=normalized,
             price=price,

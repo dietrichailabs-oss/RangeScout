@@ -134,6 +134,7 @@ def yahoo_descriptor() -> ProviderDescriptor:
             {
                 AssetClass.EQUITY,
                 AssetClass.ETF,
+                AssetClass.CLOSED_END_FUND,
                 AssetClass.ETN,
                 AssetClass.ADR,
                 AssetClass.PREFERRED,

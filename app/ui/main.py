@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 import os
 import inspect
+import logging
 from threading import Event
 from time import perf_counter
 from typing import Any
@@ -59,6 +60,10 @@ from app.security.credentials import ProviderCredentials
 from app.ui.branding import load_application_icon
 from app.ui.system_tray import SystemTrayController
 from app.ui.provider_dialog import DataProvidersDialog
+
+
+_LOG = logging.getLogger(__name__)
+
 
 try:
     from PySide6.QtCore import QObject, QPointF, QRunnable, QThreadPool, QTimer, Qt, Signal, QUrl, QStringListModel
@@ -424,6 +429,27 @@ if QObject is not None and QRunnable is not None and Signal is not None:
             self.signals.finished.emit(self.request, result.metadata.provider_id, result.payload, None)
 
 
+    class _InstrumentDiscoverySignals(QObject):
+        finished = Signal(int, str, object, object)
+
+
+    class _InstrumentDiscoveryTask(QRunnable):
+        def __init__(self, application: RangeScoutApplication, generation: int, query: str) -> None:
+            super().__init__()
+            self.application = application
+            self.generation = generation
+            self.query = query
+            self.signals = _InstrumentDiscoverySignals()
+
+        def run(self) -> None:
+            try:
+                results = self.application.discover_instruments(self.query)
+            except Exception as exc:
+                self.signals.finished.emit(self.generation, self.query, None, exc)
+                return
+            self.signals.finished.emit(self.generation, self.query, results, None)
+
+
     class _HistoryRefreshSignals(QObject):
         finished = Signal(object, str, str, object, object)
 
@@ -444,7 +470,22 @@ if QObject is not None and QRunnable is not None and Signal is not None:
                 from app.application.services import default_range_window
 
                 start, end = default_range_window(self.range_days)
-                result = self.market_data.fetch_historical(instrument.identifier, start=start, end=end)
+                fetch_historical = self.market_data.fetch_historical
+                parameters = inspect.signature(fetch_historical).parameters
+                variable = any(value.kind == inspect.Parameter.VAR_KEYWORD for value in parameters.values())
+                kwargs: dict[str, object] = {}
+                if variable or "canonical_instrument_id" in parameters:
+                    kwargs["canonical_instrument_id"] = (
+                        f"instrument:{self.request.instrument_id}" if self.request.instrument_id is not None else None
+                    )
+                if variable or "provider_symbols" in parameters:
+                    kwargs["provider_symbols"] = self.request.provider_symbols
+                if variable or "asset_class" in parameters:
+                    try:
+                        kwargs["asset_class"] = AssetClass(self.request.asset_class)
+                    except ValueError:
+                        pass
+                result = fetch_historical(instrument.identifier, start=start, end=end, **kwargs)
                 bars, _actions = result.payload
                 store = HistoricalStore(self.database_path)
                 store.upsert_bars(bars, result.metadata.provider_id)
@@ -657,6 +698,8 @@ class RangeScoutWindow:
         self._pending_quote_selection_at: float | None = None
         self._history_tasks: dict[int, Any] = {}
         self._history_dispatch_started: dict[int, float] = {}
+        self._instrument_discovery_generation = 0
+        self._instrument_discovery_tasks: dict[int, Any] = {}
         self._market_range_revision = 0
         self._comparison_tasks: set[Any] = set()
         self._auto_network_refresh = bool(auto_refresh)
@@ -2929,7 +2972,10 @@ class RangeScoutWindow:
     def _on_symbol_search_edited(self, text: str) -> None:
         if not hasattr(self, "_recent_symbol_completer"):
             return
+        self._instrument_discovery_generation += 1
+        generation = self._instrument_discovery_generation
         query = text.strip()
+        results: list[InstrumentMatch] = []
         if not query:
             values = list(self.recent_symbols.values)
             self._search_display_to_instrument = {value: value for value in values}
@@ -2940,6 +2986,34 @@ class RangeScoutWindow:
             results = self.local_instrument_search.search(query)
             self._search_display_to_instrument = {result.display_text: result for result in results}
             values = list(self._search_display_to_instrument)
+        self._recent_symbol_model.setStringList(values)
+        self._recent_symbol_completer.setCompletionPrefix("")
+        if values:
+            self._recent_symbol_completer.complete()
+        if len(query) >= 2 and not self._local_search_is_sufficient(results):
+            task = _InstrumentDiscoveryTask(self.app, generation, query)
+            task.signals.finished.connect(self._on_provider_discovery_finished)
+            self._instrument_discovery_tasks[generation] = task
+            QThreadPool.globalInstance().start(task)
+
+    @staticmethod
+    def _local_search_is_sufficient(results: list[InstrumentMatch]) -> bool:
+        if not results:
+            return False
+        first = results[0]
+        return first.match_kind in {"exact_symbol", "exact_alias", "exact_name", "issuer_name"} and first.score >= 900
+
+    def _on_provider_discovery_finished(
+        self, generation: int, query: str, results: object, error: Exception | None,
+    ) -> None:
+        self._instrument_discovery_tasks.pop(generation, None)
+        if generation != self._instrument_discovery_generation or self.active_symbol_input.text().strip() != query:
+            return
+        if error is not None or not isinstance(results, list):
+            return
+        matches = [item for item in results if isinstance(item, InstrumentMatch)]
+        self._search_display_to_instrument = {item.display_text: item for item in matches}
+        values = list(self._search_display_to_instrument)
         self._recent_symbol_model.setStringList(values)
         self._recent_symbol_completer.setCompletionPrefix("")
         if values:
@@ -3272,7 +3346,7 @@ class RangeScoutWindow:
         self.research_company_text.setText(f"Loading company profile  •  {symbol}")
         self.research_profile_text.setText("Sector / industry • loading")
         self.research_profile_detail_text.setText("Sector / industry • loading")
-        self.research_about_text.setText(f"Loading official SEC Research for {symbol}. No values are fabricated.")
+        self.research_about_text.setText(f"Loading eligible Research for {symbol}. No values are fabricated.")
         self.research_key_metrics_text.setText("Revenue loading\nNet income loading\nAssets loading\nEquity loading")
         self.current_research_snapshot = None
         self.current_analyst_result = None
@@ -3331,6 +3405,12 @@ class RangeScoutWindow:
         plan = plan_research(request.asset_class, request.subtype)
         for index in range(self.research_tabs.count()):
             self.research_tabs.setTabEnabled(index, self.research_tabs.tabText(index) in plan.visible_sections)
+        current_index = self.research_tabs.currentIndex()
+        if current_index < 0 or not self.research_tabs.isTabEnabled(current_index):
+            for index in range(self.research_tabs.count()):
+                if self.research_tabs.isTabEnabled(index):
+                    self.research_tabs.setCurrentIndex(index)
+                    break
         if plan.sec_applicable:
             self._sec_status_message = f"SEC: loading eligible Research for {request.symbol}…"
         else:
@@ -3376,7 +3456,8 @@ class RangeScoutWindow:
         if not self.active_symbol.accepts(request) or context != self._research_context():
             return
         if error is not None:
-            self._sec_status_message = f"SEC: unavailable for {request.symbol}: {error}. No values were fabricated."
+            _LOG.warning("Research provider failure for %s: %s", request.symbol, error)
+            self._sec_status_message = f"Research data unavailable for {request.symbol}. No values were fabricated."
             self._update_research_status()
             return
         if snapshot is None or snapshot.generation != request.generation or snapshot.symbol != request.symbol:
@@ -3399,7 +3480,8 @@ class RangeScoutWindow:
         if not self.active_symbol.accepts(request) or context != self._research_context():
             return
         if error is not None:
-            self._analyst_status_message = f"Analyst Outlook: unavailable for {request.symbol}: {error}."
+            _LOG.warning("Analyst provider failure for %s: %s", request.symbol, error)
+            self._analyst_status_message = f"Analyst Outlook unavailable for {request.symbol}."
             self._update_research_status()
             return
         if result is None or result.generation != request.generation or result.symbol != request.symbol:
@@ -4913,7 +4995,7 @@ class RangeScoutWindow:
         state = states.get(symbol)
         price = state.price if state and state.price is not None else None
         previous = state.previous_close if state else None
-        if self.current_quote is not None and self.current_quote.instrument.identifier.symbol == symbol:
+        if price is None and self.current_quote is not None and self.current_quote.instrument.identifier.symbol == symbol:
             price = self.current_quote.last
             previous = self.current_quote.previous_close
         if price is None:

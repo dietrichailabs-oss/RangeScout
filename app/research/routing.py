@@ -8,6 +8,7 @@ from enum import Enum
 
 from app.application.active_symbol import SymbolRequest
 from app.research.models import Availability, CompanyProfile, ResearchSnapshot, ResearchValue
+from app.research.fund import FundResearchService
 
 
 class ResearchRoute(str, Enum):
@@ -58,16 +59,17 @@ def route_snapshot(service, request: SymbolRequest, period_mode: str) -> Researc
     plan = plan_research(request.asset_class, request.subtype)
     if not plan.sec_applicable:
         return unavailable_snapshot(request, plan)
-    snapshot = service.load(request.symbol, request.generation, period_mode)
     if plan.route is ResearchRoute.FUND:
-        sections = {name: values for name, values in snapshot.sections.items() if name in plan.visible_sections}
-        sections.setdefault("Overview", {})["Instrument structure"] = ResearchValue(
-            "Fund / closed-end-fund research", "RangeScout instrument classification",
-            availability=Availability.AVAILABLE, selection_reason=plan.message,
-        )
-        return ResearchSnapshot(snapshot.symbol, snapshot.generation, snapshot.profile, sections,
-                                snapshot.retrieved_at, snapshot.warnings + (plan.message,))
-    return snapshot
+        client = getattr(service, "client", None)
+        if client is None:
+            missing = ResearchPlan(
+                ResearchRoute.FUND, False, False, plan.visible_sections,
+                Availability.PROVIDER_NOT_SUPPORTED,
+                "Fund Research requires the approved SEC submissions client; corporate companyfacts was not used.",
+            )
+            return unavailable_snapshot(request, missing)
+        return FundResearchService(client).load(request.symbol, request.generation, period_mode)
+    return service.load(request.symbol, request.generation, period_mode)
 
 
 def unavailable_snapshot(request: SymbolRequest, plan: ResearchPlan) -> ResearchSnapshot:

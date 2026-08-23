@@ -151,16 +151,54 @@ class TwelveDataAdapter(ByoFreeTierAdapter):
     credential_id = "twelve_data"
     descriptor = ProviderDescriptor(
         "twelve_data", "Twelve Data",
-        frozenset({AssetClass.EQUITY, AssetClass.ETF, AssetClass.FX, AssetClass.CRYPTO_SPOT}),
-        frozenset({Capability.QUOTE, Capability.HISTORICAL, Capability.CANDLES}),
+        frozenset({AssetClass.EQUITY, AssetClass.ETF, AssetClass.FX, AssetClass.CRYPTO_SPOT, AssetClass.COMMODITY_SPOT}),
+        frozenset({Capability.QUOTE, Capability.HISTORICAL, Capability.CANDLES, Capability.SYMBOL_SEARCH}),
         True, CredentialKind.API_KEY, DelayClass.DELAYED,
-        ProviderTerms("https://twelvedata.com/pricing", "2026-08-19", "Official BYO-key API.", attribution="Twelve Data", caching="Bounded by endpoint freshness.", redistribution="User plan terms apply; Basic is personal/internal non-display use.", decision="byo_enabled", reason="Free Basic plan: 8 credits/minute and 800/day; both local windows enforced."),
+        ProviderTerms("https://twelvedata.com/docs", "2026-08-22", "Official BYO-key API including symbol search and documented precious-metal spot pairs.", attribution="Twelve Data", caching="Bounded by endpoint freshness.", redistribution="User plan terms apply; Basic is personal/internal non-display use.", decision="byo_enabled", reason="Official APIs document /symbol_search and XAU/USD quote/time-series coverage; local Basic-plan quota windows are enforced."),
         enabled=True, max_concurrency=1, minimum_request_interval_seconds=7.5,
     )
 
     def default_quota(self) -> LocalQuota:
         # Official Basic plan reviewed 2026-08-19: 8 credits/minute and 800/day.
         return LocalQuota(windows=((8, 60), (800, 86400)))
+
+    def search_instruments(self, query: str, limit: int = 20) -> list[dict[str, object]]:
+        """Use Twelve Data's documented symbol-search endpoint with the user's key."""
+
+        normalized = str(query or "").strip()
+        if len(normalized) < 2 or len(normalized) > 120:
+            return []
+        self.quota.consume()
+        data = self.transport.get_json(
+            "https://api.twelvedata.com/symbol_search?" + urlencode({
+                "symbol": normalized, "outputsize": str(max(1, min(50, int(limit)))),
+                "show_plan": "true", "apikey": self._key(),
+            })
+        )
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise FabricProviderError("Twelve Data symbol discovery is unavailable.")
+        verified = datetime.now(timezone.utc).isoformat()
+        results: list[dict[str, object]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            instrument_type = str(row.get("instrument_type") or "").strip()
+            if not symbol:
+                continue
+            results.append({
+                "canonical_symbol": symbol,
+                "provider_symbol": symbol,
+                "name": str(row.get("instrument_name") or symbol).strip(),
+                "venue": str(row.get("exchange") or row.get("mic_code") or "").strip().upper(),
+                "currency": str(row.get("currency") or "USD").strip().upper(),
+                "instrument_type": instrument_type,
+                "subtype": instrument_type.lower().replace("-", "_").replace(" ", "_"),
+                "asset_class": _twelve_asset_class(instrument_type, symbol),
+                "verified_at_utc": verified,
+            })
+        return results
 
     def request(self, request: FabricRequest) -> FabricResult:
         self.quota.consume()
@@ -184,6 +222,23 @@ class TwelveDataAdapter(ByoFreeTierAdapter):
                 raise FabricProviderError("Twelve Data history is unavailable for this symbol or plan.")
             return self._result(request, {"bars": values}, _newest_twelve_timestamp(values), ttl=300)
         raise FabricProviderError("Unsupported Twelve Data capability.")
+
+
+def _twelve_asset_class(instrument_type: str, symbol: str) -> str:
+    kind = instrument_type.strip().lower().replace("-", " ")
+    mapping = {
+        "common stock": "equity", "preferred stock": "preferred", "closed end fund": "closed_end_fund",
+        "etf": "etf", "exchange traded fund": "etf", "exchange traded note": "etn",
+        "physical currency": "fx", "digital currency": "crypto_spot",
+        "commodity": "commodity_spot", "precious metal": "commodity_spot",
+        "index": "index", "future": "future", "mutual fund": "mutual_fund",
+    }
+    if kind in mapping:
+        return mapping[kind]
+    normalized = symbol.upper().replace("-", "/")
+    if normalized.startswith(("XAU/", "XAG/", "XPT/", "XPD/")):
+        return "commodity_spot"
+    return "unknown"
 
 
 class AlphaVantageAdapter(ByoFreeTierAdapter):

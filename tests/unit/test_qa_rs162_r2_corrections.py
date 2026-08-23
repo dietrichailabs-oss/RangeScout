@@ -14,6 +14,7 @@ from app.application.live_trading_runtime import LiveSymbolState
 from app.catalysts.storage import CatalystStore
 from app.catalysts.symbol_mapping import SymbolCatalog
 from app.models.schemas import AssetType, DataDelay, Instrument, InstrumentIdentifier, OhlcvBar, QuoteSnapshot
+from app.market_calendar.us_equities import NEW_YORK
 from app.security.credentials import InMemoryCredentialStore, ProviderCredentials
 from app.streaming.ticker import plan_ticker_subscriptions
 from app.ui.main import QApplication, build_window
@@ -160,7 +161,7 @@ def _bar(symbol: str, day: date, close: int) -> OhlcvBar:
 def test_chart_calendar_coverage_auto_enriches_and_newest_range_wins(correction_window, monkeypatch) -> None:
     window, _qt = correction_window
     window._auto_network_refresh = True
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(NEW_YORK).date()
     recent = [_bar("AAPL", today - timedelta(days=offset), 100 + offset) for offset in range(30)]
     window.app.store.upsert_bars(recent, "fake")
     scheduled: list[tuple[int, int]] = []

@@ -18,6 +18,7 @@ from app.platform import platform_adapter
 from app.domain.errors import DataRootError
 from app.security.credentials import CredentialStore, default_credential_store
 from app.market_data.providers.catalog import default_fabric_registry
+from app.market_data.contracts import Capability
 from app.market_data.registry import FabricRegistry
 from app.market_data.router import MarketDataRouter
 from app.market_data.service import FabricMarketDataService
@@ -27,7 +28,7 @@ from app.company_data.repository import CompanyDatabaseRepository
 from app.company_data.maintenance import CompanyMaintenanceService
 from app.company_data.scheduler import RecurringMaintenanceScheduler
 from app.company_data.master import provision_company_master
-from app.company_data.instrument_intelligence import InstrumentReferenceSeeder
+from app.company_data.instrument_intelligence import InstrumentReferenceSeeder, InstrumentResolver, InstrumentMatch
 from app.application.local_snapshot import LocalSnapshotRepository
 
 
@@ -167,6 +168,28 @@ class RangeScoutApplication:
 
     def search_instruments(self, query: str, limit: int = 25) -> list[dict[str, object]]:
         return self.discovery_coordinator.search(query, limit)
+
+    def discover_instruments(self, query: str, limit: int = 12) -> list[InstrumentMatch]:
+        """Credentialed provider discovery fallback; callers run this off the UI thread."""
+
+        resolver = InstrumentResolver(self.store.path)
+        for adapter in self.fabric_registry.snapshot():
+            descriptor = adapter.descriptor
+            discover = getattr(adapter, "search_instruments", None)
+            if (
+                not descriptor.enabled
+                or Capability.SYMBOL_SEARCH not in descriptor.capabilities
+                or not callable(discover)
+            ):
+                continue
+            try:
+                if descriptor.requires_credentials and not adapter.health_check():
+                    continue
+                rows = discover(query, limit)
+                resolver.enrich_provider_results(descriptor.provider_id, rows)
+            except Exception:
+                continue
+        return resolver.search(query, limit)
 
     def shutdown(self) -> None:
         self.company_maintenance_scheduler.shutdown()

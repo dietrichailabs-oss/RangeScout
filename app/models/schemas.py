@@ -31,8 +31,14 @@ class AdjustmentMode(str, Enum):
 
 class AssetType(str, Enum):
     STOCK = "stock"
+    PREFERRED = "preferred"
     ETF = "etf"
+    CLOSED_END_FUND = "closed_end_fund"
     INDEX = "index"
+    COMMODITY_SPOT = "commodity_spot"
+    FUTURE = "future"
+    FOREX = "forex"
+    CRYPTO = "crypto"
     UNKNOWN = "unknown"
 
 
