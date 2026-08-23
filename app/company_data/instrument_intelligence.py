@@ -12,6 +12,7 @@ import sqlite3
 from typing import Callable, Iterable, Mapping
 
 from app.ui.branding import application_resource_root
+from app.market_data.provider_symbols import derive_yahoo_provider_symbol, is_placeholder_symbol
 
 
 _SPACE = re.compile(r"[^a-z0-9]+")
@@ -22,7 +23,7 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 3
+_REFERENCE_VERSION = 4
 _REFERENCE_TIME = "2026-08-23T00:00:00+00:00"
 _CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
 
@@ -246,6 +247,7 @@ class InstrumentReferenceSeeder:
                 ).fetchall()
                 for row in rows[:1]:
                     self._insert_alias(con, int(row[0]), alias, venue, kind, 35)
+            self._apply_source_hygiene(con)
             rows = con.execute(
                 "SELECT instrument_id,security_name,security_type FROM rs_instruments WHERE is_active=1"
             ).fetchall()
@@ -258,6 +260,7 @@ class InstrumentReferenceSeeder:
                         (_REFERENCE_TIME, int(row["instrument_id"])),
                     )
             self._apply_authoritative_classifications(con)
+            self._apply_yahoo_crosswalks(con)
             con.execute(
                 "INSERT OR REPLACE INTO rs_schema_meta(key,value,updated_at_utc) VALUES('instrument_reference_version',?,?)",
                 (str(_REFERENCE_VERSION), _REFERENCE_TIME),
@@ -268,6 +271,93 @@ class InstrumentReferenceSeeder:
             con.commit()
             return changed
 
+    @staticmethod
+    def _apply_source_hygiene(con: sqlite3.Connection) -> None:
+        """Deactivate generic no-ticker placeholders without deleting provenance."""
+
+        rows = con.execute(
+            "SELECT instrument_id,canonical_symbol FROM rs_instruments WHERE is_active=1"
+        ).fetchall()
+        for row in rows:
+            if not is_placeholder_symbol(row["canonical_symbol"]):
+                continue
+            instrument_id = int(row["instrument_id"])
+            con.execute(
+                """UPDATE rs_instruments SET is_active=0,metadata_source='source_placeholder_filtered',
+                   metadata_verified_utc=?,updated_at_utc=? WHERE instrument_id=?""",
+                (_REFERENCE_TIME, _REFERENCE_TIME, instrument_id),
+            )
+            con.execute("UPDATE rs_provider_symbols SET is_active=0 WHERE instrument_id=?", (instrument_id,))
+
+    @staticmethod
+    def _apply_yahoo_crosswalks(con: sqlite3.Connection) -> None:
+        """Persist Yahoo notation separately from canonical identity with provenance."""
+
+        applicable_assets = {
+            "equity", "etf", "closed_end_fund", "etn", "adr", "preferred",
+            "warrant", "right", "unit", "index", "otc",
+        }
+        alias_rows: dict[int, list[tuple[str, str]]] = {}
+        for row in con.execute(
+            "SELECT instrument_id,alias_symbol,alias_kind FROM rs_instrument_aliases ORDER BY alias_id"
+        ):
+            alias_rows.setdefault(int(row["instrument_id"]), []).append(
+                (str(row["alias_symbol"]), str(row["alias_kind"]))
+            )
+        rows = con.execute(
+            """SELECT instrument_id,canonical_symbol,asset_class,instrument_subtype,security_type,security_name
+               FROM rs_instruments WHERE is_active=1 ORDER BY instrument_id"""
+        ).fetchall()
+        for row in rows:
+            instrument_id = int(row["instrument_id"])
+            asset = canonical_asset_class(
+                row["asset_class"], row["instrument_subtype"], row["security_type"], row["security_name"]
+            )
+            if asset not in applicable_assets:
+                continue
+            decision = derive_yahoo_provider_symbol(
+                str(row["canonical_symbol"]), alias_rows.get(instrument_id, ())
+            )
+            status, reason = decision.status, decision.reason
+            if decision.supported and decision.provider_symbol != decision.canonical_symbol:
+                conflict = con.execute(
+                    """SELECT instrument_id FROM rs_provider_symbols
+                       WHERE provider_id='yahoo' AND provider_symbol=? AND is_active=1
+                       ORDER BY instrument_id LIMIT 1""",
+                    (decision.provider_symbol,),
+                ).fetchone()
+                if conflict is not None and int(conflict[0]) != instrument_id:
+                    status, reason = "unsupported", "provider_symbol_collision"
+                else:
+                    con.execute(
+                        """UPDATE rs_provider_symbols SET is_active=0
+                           WHERE provider_id='yahoo' AND instrument_id=? AND provider_symbol<>?
+                             AND mapping_status LIKE 'derived_%'""",
+                        (instrument_id, decision.provider_symbol),
+                    )
+                    con.execute(
+                        """INSERT OR REPLACE INTO rs_provider_symbols(
+                           provider_id,instrument_id,provider_symbol,provider_venue,product_type,is_active,
+                           first_seen_utc,last_seen_utc,metadata_json,mapping_status,capabilities_json,verified_at_utc)
+                           VALUES('yahoo',?,?,?,?,1,?,?,?,?,?,?)""",
+                        (
+                            instrument_id, decision.provider_symbol, "", asset, _REFERENCE_TIME, _REFERENCE_TIME,
+                            json.dumps({
+                                "canonical_symbol": decision.canonical_symbol,
+                                "mapping_source": decision.mapping_source,
+                                "evidence_aliases": decision.evidence_aliases,
+                            }, sort_keys=True),
+                            "derived_official_aliases", json.dumps(["candles", "historical", "quote"]),
+                            _REFERENCE_TIME,
+                        ),
+                    )
+            for capability in ("quote", "historical", "candles"):
+                con.execute(
+                    """INSERT OR REPLACE INTO rs_provider_instrument_support(
+                       provider_id,instrument_id,capability,support_status,reason,mapping_source,verified_at_utc)
+                       VALUES('yahoo',?,?,?,?,?,?)""",
+                    (instrument_id, capability, status, reason, decision.mapping_source, _REFERENCE_TIME),
+                )
     @staticmethod
     def _apply_authoritative_classifications(con: sqlite3.Connection) -> None:
         """Apply frozen official classifications by CIK, never by symbol."""
@@ -358,6 +448,9 @@ class InstrumentResolver:
                               MAX(COALESCE(a.ranking_boost,0)) alias_boost
                        FROM rs_instruments i JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
                        WHERE UPPER(a.alias_symbol)=? AND i.is_active=1
+                         AND LOWER(COALESCE(a.alias_kind,'')) NOT IN (
+                           'official_directory_symbol','official_source_symbol_variant','source_symbol','provider_symbol'
+                         )
                        GROUP BY i.instrument_id ORDER BY i.search_priority DESC,i.instrument_id DESC""",
                     (upper,),
                 ).fetchall()
@@ -369,17 +462,19 @@ class InstrumentResolver:
                               GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
                               MAX(COALESCE(a.ranking_boost,0)) alias_boost
                        FROM rs_instruments i LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
-                       WHERE UPPER(i.canonical_symbol)=? OR UPPER(COALESCE(a.alias_symbol,''))=?
+                       WHERE i.is_active=1 AND (
+                          UPPER(i.canonical_symbol)=? OR UPPER(COALESCE(a.alias_symbol,''))=?
                           OR i.security_name LIKE ? COLLATE NOCASE OR i.canonical_symbol LIKE ? COLLATE NOCASE
                           OR COALESCE(a.alias_symbol,'') LIKE ? COLLATE NOCASE
                           OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(i.security_name),' ',''),'-',''),'.',''),',',''),'&','') LIKE ?
+                       )
                        GROUP BY i.instrument_id ORDER BY i.is_active DESC,
                          CASE WHEN UPPER(COALESCE(i.security_type,''))='COMMON STOCK' THEN 0 ELSE 1 END,
                          i.search_priority DESC LIMIT 1000""",
                     (upper, upper, token, f"{raw}%", f"{raw}%", compact),
                 ).fetchall()
                 matches = [self._match(con, row, raw, upper, normalized) for row in rows]
-        ranked = [item for item in matches if item.score > 0]
+        ranked = [item for item in matches if item.match_kind != "none" and item.score > 0]
         explicit_symbol_intent = raw == upper and not any(character.isspace() for character in raw)
         identity_tier = (
             {"exact_symbol": 0, "exact_alias": 1}
@@ -508,7 +603,7 @@ class InstrumentResolver:
             ratio = SequenceMatcher(None, normalized, name_norm).ratio() if len(normalized) >= 4 else 0
             score, kind, matched = (int(560 * ratio), "fuzzy", name) if ratio >= .86 else (0, "none", "")
         intent_adjustment = (
-            0 if kind in {"exact_symbol", "exact_alias", "exact_name"}
+            0 if kind in {"none", "exact_symbol", "exact_alias", "exact_name"}
             else 190 if role == "primary_common"
             else -260 if role == "alternate_security"
             else 0

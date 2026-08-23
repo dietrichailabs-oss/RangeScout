@@ -28,7 +28,7 @@ def _master_connection() -> sqlite3.Connection:
 def test_frozen_sources_and_broad_master_are_exact_and_auditable() -> None:
     report_path = Path("docs/engineering/v1.6/COMPANY_MASTER_GENERATION_REPORT.json")
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    assert report["final_unique_instrument_count"] == 16_377
+    assert report["final_unique_instrument_count"] == 16_376
     assert report["master_sha256"] == sha256(company_master_path().read_bytes()).hexdigest().upper()
     assert report["integrity_check"] == "ok"
     assert report["foreign_key_violations"] == 0
@@ -49,7 +49,7 @@ def test_master_has_broad_exchange_etf_and_outside_legacy_seed_coverage() -> Non
                 "SELECT canonical_symbol FROM seed_instruments WHERE canonical_symbol IN ('AAPL','BA','NVDA','GOOGL','JPM','IBM','KO','XOM')"
             )
         }
-    assert count == 16_377
+    assert count == 16_376
     assert etfs >= 5_000
     assert {"NASDAQ", "NYSE", "NYSE Arca", "OTC"}.issubset(venues)
     assert present == {"AAPL", "BA", "NVDA", "GOOGL", "JPM", "IBM", "KO", "XOM"}
@@ -62,7 +62,7 @@ def test_clean_install_provisions_random_offline_sample_under_one_second(tmp_pat
     began = perf_counter()
     report = provision_company_master(target)
     elapsed = perf_counter() - began
-    assert report.available == 16_377 and report.added == 16_377
+    assert report.available == 16_376 and report.added == 16_376
     assert elapsed < 1.0
     with _master_connection() as connection:
         symbols = [row[0] for row in connection.execute("SELECT canonical_symbol FROM seed_instruments ORDER BY canonical_symbol")]

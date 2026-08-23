@@ -12,9 +12,10 @@ from app.historical_store.schema_v6 import MIGRATION_6_SQL
 from app.historical_store.schema_v7 import MIGRATION_7_SQL
 from app.historical_store.schema_v8 import MIGRATION_8_SQL
 from app.historical_store.schema_v9 import MIGRATION_9_SQL
+from app.historical_store.schema_v10 import MIGRATION_10_SQL
 
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 
 
 def current_schema_version() -> int:
@@ -33,6 +34,7 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
         7: MIGRATION_7_SQL,
         8: MIGRATION_8_SQL,
         9: MIGRATION_9_SQL,
+        10: MIGRATION_10_SQL,
     }
     for target in range(existing_version + 1, CURRENT_SCHEMA_VERSION + 1):
         connection.execute("BEGIN IMMEDIATE")

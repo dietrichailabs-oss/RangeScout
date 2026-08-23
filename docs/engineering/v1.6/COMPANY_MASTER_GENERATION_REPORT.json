@@ -5,7 +5,7 @@
   "contains_market_prices": false,
   "counts_by_asset_class": {
     "etf": 5639,
-    "stock": 10738
+    "stock": 10737
   },
   "counts_by_exchange_venue": {
     "Cboe BZX": 1609,
@@ -14,21 +14,21 @@
     "NYSE American": 309,
     "NYSE Arca": 2707,
     "OTC": 2501,
-    "SEC associated": 186
+    "SEC associated": 185
   },
   "counts_by_source": {
     "nasdaq_trader_nasdaqlisted": 5593,
     "nasdaq_trader_otherlisted": 7540,
-    "sec_company_tickers_exchange": 10387
+    "sec_company_tickers_exchange": 10386
   },
-  "final_unique_instrument_count": 16377,
+  "final_unique_instrument_count": 16376,
   "foreign_key_violations": 0,
   "input_snapshots": [
     {
       "filename": "sec_company_tickers_exchange.json",
       "input_row_count": 10387,
-      "normalized_row_count": 10387,
-      "rejected_row_count": 0,
+      "normalized_row_count": 10386,
+      "rejected_row_count": 1,
       "retrieved_utc": "2026-08-21T13:27:41.6398931+00:00",
       "sha256": "DC94346047679508512CC7384CAA89B5A5309D7AA80309E8BB1EB22E82C6BEDD",
       "size_bytes": 520956,
@@ -128,10 +128,10 @@
     }
   },
   "master_path": "RangeScout_Company_Master.sqlite",
-  "master_sha256": "7A6DD392D6F63F0EAEBC6EA91355A85A8D173305DCC1B753BA42CC1090F3D9C5",
+  "master_sha256": "D36AD75778BFDC3ED3C5E779B6817C9667D84C70E41C7FF95C72B1AF8E66124B",
   "master_size_bytes": 8835072,
-  "master_version": 2,
-  "parser_version": "rangescout-company-master-v2",
+  "master_version": 3,
+  "parser_version": "rangescout-company-master-v3",
   "pass": true,
   "schema": "rangescout.company-master-generation.v2"
 }

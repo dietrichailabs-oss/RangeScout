@@ -13,15 +13,20 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.market_data.provider_symbols import is_placeholder_symbol
 DEFAULT_INPUT = ROOT / "docs" / "engineering" / "v1.6" / "company_master_sources"
 DEFAULT_OUTPUT = ROOT / "resources" / "RangeScout_Company_Master.sqlite"
 DEFAULT_REPORT = ROOT / "docs" / "engineering" / "v1.6" / "COMPANY_MASTER_GENERATION_REPORT.json"
-PARSER_VERSION = "rangescout-company-master-v2"
-MASTER_VERSION = 2
+PARSER_VERSION = "rangescout-company-master-v3"
+MASTER_VERSION = 3
 
 SOURCE_FILES = {
     "sec_company_tickers_exchange": "sec_company_tickers_exchange.json",
@@ -99,7 +104,12 @@ def _match_key(value: str) -> str:
 
 
 def _valid_symbol(value: str) -> bool:
-    return bool(value) and len(value) <= 32 and bool(re.fullmatch(r"[A-Z0-9.\-/$^]+", value))
+    return (
+        bool(value)
+        and not is_placeholder_symbol(value)
+        and len(value) <= 32
+        and bool(re.fullmatch(r"[A-Z0-9.\-/$^]+", value))
+    )
 
 
 def _security_type(name: str, is_etf: bool = False) -> tuple[str, str]:

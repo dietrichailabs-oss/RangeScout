@@ -8,7 +8,6 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from string import ascii_uppercase, digits
 from typing import Any
 
 from app.domain.errors import DataQualityError, ValidationError
@@ -23,10 +22,8 @@ from app.models.schemas import (
     QuoteSnapshot,
 )
 from app.providers.base import MarketDataProvider, ProviderCapability, ProviderUnavailable, ProviderResult
+from app.market_data.provider_symbols import ProviderSymbolError, normalize_yahoo_symbol
 
-
-_ALLOWED_SYMBOL_CHARS = set(ascii_uppercase + digits + ".^-=")
-_MAX_SYMBOL_LEN = 64
 
 
 class YahooFinanceProvider:
@@ -52,34 +49,10 @@ class YahooFinanceProvider:
 
     @staticmethod
     def normalize_symbol(raw: str) -> str:
-        if not isinstance(raw, str):
-            raise ValidationError("Symbol must be a string.")
-        stripped = raw.strip()
-        if stripped != raw:
-            raise ValidationError("Symbol format is invalid.")
-        if stripped == stripped.lower() and not any(ch in stripped for ch in "._-^="):
-            raise ValidationError("Symbol format is invalid.")
-        normalized = stripped.upper()
-        if not normalized:
-            raise ValidationError("Symbol is required.")
-        if len(normalized) > _MAX_SYMBOL_LEN:
-            raise ValidationError("Symbol is too long.")
-        if any(ch.isspace() or ord(ch) < 0x20 for ch in normalized):
-            raise ValidationError("Symbol must not contain control or whitespace characters.")
-        if any(ch in {"&", "?", "#", "/", "%"} for ch in normalized):
-            raise ValidationError("Symbol contains unsupported URL control characters.")
-        if not all(ch in _ALLOWED_SYMBOL_CHARS for ch in normalized):
-            raise ValidationError("Symbol contains unsupported characters.")
-        if normalized.startswith(".") or normalized.startswith("-") or normalized.endswith(".") or normalized.endswith("-"):
-            raise ValidationError("Symbol format is invalid.")
-        if normalized.count("=") > 1:
-            raise ValidationError("Symbol format is invalid.")
-        if normalized.count("^") > 1:
-            raise ValidationError("Symbol format is invalid.")
-        if normalized.startswith("^") and len(normalized) < 2:
-            raise ValidationError("Symbol format is invalid.")
-        return normalized
-
+        try:
+            return normalize_yahoo_symbol(raw)
+        except ProviderSymbolError as exc:
+            raise ValidationError(str(exc)) from exc
     def resolve_instrument(self, symbol: str) -> Instrument:
         symbol_u = self.normalize_symbol(symbol)
         return Instrument(

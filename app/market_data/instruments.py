@@ -9,6 +9,7 @@ import re
 import unicodedata
 
 from app.market_data.contracts import AssetClass
+from app.market_data.provider_symbols import is_placeholder_symbol
 
 
 _SAFE_SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.\-/^=$]{0,63}$")
@@ -16,7 +17,7 @@ _SAFE_SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.\-/^=$]{0,63}$")
 
 def normalize_symbol(symbol: str) -> str:
     normalized = unicodedata.normalize("NFKC", symbol).strip().upper()
-    if not _SAFE_SYMBOL.fullmatch(normalized):
+    if is_placeholder_symbol(normalized) or not _SAFE_SYMBOL.fullmatch(normalized):
         raise ValueError("Symbol contains unsupported characters.")
     return normalized
 
