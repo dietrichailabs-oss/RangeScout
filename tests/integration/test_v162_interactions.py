@@ -95,3 +95,14 @@ def test_credentials_synchronize_and_notes_update_same_record(ux_window) -> None
     window._on_note_selected(item)
     assert window.notes_text.toPlainText() == "edited persisted body"
     assert "T" not in item.text().splitlines()[0]
+
+
+def test_canonical_slash_symbol_remains_active_without_invalid_stream_subscription(ux_window) -> None:
+    window, _credentials, qt = ux_window
+    state = window.set_active_symbol("XAUUSD", source="global-search")
+    qt.processEvents()
+    assert state.symbol == "XAU/USD"
+    assert state.asset_class == "commodity_spot"
+    assert "XAU/USD" not in window.runtime.live.subscription_plan.subscribed
+    assert "XAU/USD" in window._ticker_identity_labels
+    assert window.current_symbol == "XAU/USD"

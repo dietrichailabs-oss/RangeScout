@@ -5030,6 +5030,8 @@ class RangeScoutWindow:
         watchlist_order = list(self._ticker_watchlist_symbols)
         symbols = [symbol for symbol in watchlist_order if symbol in subscribed]
         symbols.extend(symbol for symbol in subscribed if symbol not in symbols)
+        if self.current_symbol not in symbols:
+            symbols.insert(0, self.current_symbol)
         symbols = symbols or [self.current_symbol]
         self._ticker_buttons: dict[str, QPushButton] = {}
         self._ticker_identity_labels: dict[str, QLabel] = {}
