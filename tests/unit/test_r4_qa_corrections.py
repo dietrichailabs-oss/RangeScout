@@ -296,3 +296,10 @@ def test_required_rapid_switch_sequence_keeps_final_canonical_identity(tmp_path:
     assert final.instrument_id == resolver.resolve_unique("MSFT").instrument.instrument_id
     assert all(not controller.accepts(request) for request in stale[:-1])
     assert controller.accepts(stale[-1])
+
+
+def test_packaged_startup_symbol_uses_canonical_search_path() -> None:
+    source = (Path(__file__).resolve().parents[2] / "app" / "ui" / "runner.py").read_text(encoding="utf-8")
+    assert 'window.set_active_symbol(symbol, source="global-search")' in source
+    assert 'window.set_active_symbol(symbol, source="automation-startup")' not in source
+

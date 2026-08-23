@@ -111,7 +111,7 @@ def main() -> None:
     if startup_symbol:
         symbol = startup_symbol
         window.market_symbol_input.setText(symbol)
-        window.set_active_symbol(symbol, source="automation-startup")
+        window.set_active_symbol(symbol, source="global-search")
 
     startup_tab = os.environ.get("RANGESCOUT_START_TAB", "").strip().lower()
     startup_theme = os.environ.get("RANGESCOUT_START_THEME", "").strip().lower()
