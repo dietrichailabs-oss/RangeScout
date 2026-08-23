@@ -51,7 +51,7 @@ def test_acceptance_searches_return_canonical_disambiguated_instruments(tmp_path
     expected = {
         "Apple": "AAPL", "AAPL": "AAPL", "MSFT": "MSFT",
         "BOE": "BOE", "BlackRock Enhanced": "BOE",
-        "Gold": "XAU/USD", "Gold Spot": "XAU/USD", "XAU": "XAU/USD",
+        "Gold": "GOLD", "Gold Spot": "XAU/USD", "XAU": "XAU/USD",
         "XAUUSD": "XAU/USD", "XAU/USD": "XAU/USD",
         "Dow Jones": "^DJI", "Dow": "^DJI", "Dow 30": "^DJI", "DJIA": "^DJI",
         "S&P 500": "^GSPC", "SP500": "^GSPC", "SPX": "^GSPC",
