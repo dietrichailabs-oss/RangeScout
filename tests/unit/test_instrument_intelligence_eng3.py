@@ -51,9 +51,9 @@ def test_acceptance_searches_return_canonical_disambiguated_instruments(tmp_path
     expected = {
         "Apple": "AAPL", "AAPL": "AAPL", "MSFT": "MSFT",
         "BOE": "BOE", "BlackRock Enhanced": "BOE",
-        "Gold": "GOLD", "Gold Spot": "XAU/USD", "XAU": "XAU/USD",
+        "Gold Spot": "XAU/USD", "XAU": "XAU/USD",
         "XAUUSD": "XAU/USD", "XAU/USD": "XAU/USD",
-        "Dow Jones": "^DJI", "Dow": "DOW", "Dow 30": "^DJI", "DJIA": "DJIA",
+        "Dow Jones": "^DJI", "Dow 30": "^DJI",
         "S&P 500": "^GSPC", "SP500": "^GSPC", "SPX": "^GSPC",
         "Nasdaq Composite": "^IXIC", "Bitcoin": "BTC/USD",
     }
@@ -63,6 +63,14 @@ def test_acceptance_searches_return_canonical_disambiguated_instruments(tmp_path
         assert match.symbol == symbol, query
         assert match.instrument.instrument_id > 0
         assert match.display_text.count("·") == 3
+    for query, symbols in {
+        "gold": {"GOLD", "XAU/USD"}, "Gold": {"GOLD", "XAU/USD"},
+        "Dow": {"DOW", "^DJI"}, "DJIA": {"DJIA", "^DJI"}, "BTC": {"BTC", "BTC/USD"},
+    }.items():
+        results = resolver.search(query, 10)
+        assert symbols.issubset({item.symbol for item in results})
+        assert resolver.resolve_unique(query) is None
+    assert resolver.search("Gold", 10)[0].symbol == "XAU/USD"
     assert resolver.resolve_unique("Nasdaq").symbol == "^IXIC"
     assert resolver.resolve_unique("Gold Spot").instrument.provider_symbols == {"twelve_data": "XAU/USD"}
 

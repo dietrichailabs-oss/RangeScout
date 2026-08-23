@@ -332,7 +332,7 @@ class InstrumentResolver:
 
     def search(self, query: str, limit: int = 12) -> list[InstrumentMatch]:
         raw = str(query or "").strip()
-        if not raw or len(raw) > 160:
+        if not raw:
             return []
         upper, normalized = raw.upper(), normalize_search_text(raw)
         token = f"%{raw}%"
@@ -348,28 +348,44 @@ class InstrumentResolver:
                    GROUP BY i.instrument_id ORDER BY i.search_priority DESC,i.instrument_id DESC""",
                 (upper,),
             ).fetchall()
-            if exact_rows:
+            if len(raw) < 2:
                 exact = [self._match(con, row, raw, upper, normalized) for row in exact_rows]
                 return exact[:max(1, min(50, int(limit)))]
-            if len(raw) < 2:
-                return []
-            rows = con.execute(
-                """SELECT i.*,GROUP_CONCAT(a.alias_symbol,'|') aliases,
-                          GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
-                          MAX(COALESCE(a.ranking_boost,0)) alias_boost
-                   FROM rs_instruments i LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
-                   WHERE UPPER(i.canonical_symbol)=? OR UPPER(COALESCE(a.alias_symbol,''))=?
-                      OR i.security_name LIKE ? COLLATE NOCASE OR i.canonical_symbol LIKE ? COLLATE NOCASE
-                      OR COALESCE(a.alias_symbol,'') LIKE ? COLLATE NOCASE
-                      OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(i.security_name),' ',''),'-',''),'.',''),',',''),'&','') LIKE ?
-                   GROUP BY i.instrument_id ORDER BY i.is_active DESC,
-                     CASE WHEN UPPER(COALESCE(i.security_type,''))='COMMON STOCK' THEN 0 ELSE 1 END,
-                     i.search_priority DESC LIMIT 1000""",
-                (upper, upper, token, f"{raw}%", f"{raw}%", compact),
-            ).fetchall()
-            matches = [self._match(con, row, raw, upper, normalized) for row in rows]
+            if exact_rows:
+                alias_rows = con.execute(
+                    """SELECT i.*,GROUP_CONCAT(a.alias_symbol,'|') aliases,
+                              GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
+                              MAX(COALESCE(a.ranking_boost,0)) alias_boost
+                       FROM rs_instruments i JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
+                       WHERE UPPER(a.alias_symbol)=? AND i.is_active=1
+                       GROUP BY i.instrument_id ORDER BY i.search_priority DESC,i.instrument_id DESC""",
+                    (upper,),
+                ).fetchall()
+                rows_by_id = {int(row["instrument_id"]): row for row in (*exact_rows, *alias_rows)}
+                matches = [self._match(con, row, raw, upper, normalized) for row in rows_by_id.values()]
+            else:
+                rows = con.execute(
+                    """SELECT i.*,GROUP_CONCAT(a.alias_symbol,'|') aliases,
+                              GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
+                              MAX(COALESCE(a.ranking_boost,0)) alias_boost
+                       FROM rs_instruments i LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
+                       WHERE UPPER(i.canonical_symbol)=? OR UPPER(COALESCE(a.alias_symbol,''))=?
+                          OR i.security_name LIKE ? COLLATE NOCASE OR i.canonical_symbol LIKE ? COLLATE NOCASE
+                          OR COALESCE(a.alias_symbol,'') LIKE ? COLLATE NOCASE
+                          OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(i.security_name),' ',''),'-',''),'.',''),',',''),'&','') LIKE ?
+                       GROUP BY i.instrument_id ORDER BY i.is_active DESC,
+                         CASE WHEN UPPER(COALESCE(i.security_type,''))='COMMON STOCK' THEN 0 ELSE 1 END,
+                         i.search_priority DESC LIMIT 1000""",
+                    (upper, upper, token, f"{raw}%", f"{raw}%", compact),
+                ).fetchall()
+                matches = [self._match(con, row, raw, upper, normalized) for row in rows]
         ranked = [item for item in matches if item.score > 0]
-        identity_tier = {"exact_symbol": 0, "exact_alias": 1}
+        explicit_symbol_intent = raw == upper and not any(character.isspace() for character in raw)
+        identity_tier = (
+            {"exact_symbol": 0, "exact_alias": 1}
+            if explicit_symbol_intent
+            else {"exact_alias": 0, "exact_name": 1, "exact_symbol": 2}
+        )
         ranked.sort(key=lambda item: (
             identity_tier.get(item.match_kind, 2), -item.score,
             -item.instrument.instrument_id, item.symbol, item.exchange,
@@ -381,10 +397,13 @@ class InstrumentResolver:
         if not results:
             return None
         first, second = results[0], results[1] if len(results) > 1 else None
-        if first.match_kind in {"exact_symbol", "exact_alias"}:
-            exact = [item for item in results if item.match_kind == first.match_kind
-                     and item.matched_text.upper() == first.matched_text.upper()]
-            return first if len({item.instrument.identity for item in exact}) == 1 else None
+        identity_matches = [
+            item for item in results
+            if item.match_kind in {"exact_symbol", "exact_alias"}
+            and item.matched_text.casefold() == str(query or "").strip().casefold()
+        ]
+        if identity_matches:
+            return first if len({item.instrument.identity for item in identity_matches}) == 1 else None
         if first.match_kind == "exact_name":
             exact_names = [item for item in results if item.match_kind == "exact_name"]
             return first if len({item.instrument.identity for item in exact_names}) == 1 else None

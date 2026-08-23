@@ -185,6 +185,7 @@ class MiniLineChart(_widget_base):
         self._theme = Theme.LIGHT
         self._display_mode = self.LINE_MODE
         self._last_rendered_candle_directions: tuple[str, ...] = ()
+        self._empty_state_text = "Loading price history…"
 
     @property
     def display_mode(self) -> str:
@@ -219,6 +220,10 @@ class MiniLineChart(_widget_base):
         self._last_rendered_candle_directions = ()
         self.update()
 
+    def set_empty_state(self, message: str) -> None:
+        self._empty_state_text = str(message or "Price history unavailable.")
+        self.update()
+
     def set_theme(self, theme: str) -> None:
         self._theme = theme
         self.update()
@@ -243,7 +248,7 @@ class MiniLineChart(_widget_base):
 
         area = self.rect().adjusted(12, 28, -12, -28)
         if not self._closes:
-            painter.drawText(area, Qt.AlignCenter, "No price bars loaded yet. Click Refresh to pull data.")
+            painter.drawText(area, Qt.AlignCenter, self._empty_state_text)
             return
 
         all_values = list(self._closes)
@@ -1255,11 +1260,15 @@ class RangeScoutWindow:
                 dashboard = QGridLayout()
                 dashboard.setSpacing(8)
                 about_card, about_layout = self._card("Company Profile", "Official SEC identity and classification")
+                self.research_profile_card_title = about_layout.itemAt(0).widget()
+                self.research_profile_card_subtitle = about_layout.itemAt(1).widget()
                 about_card.setMinimumHeight(155)
                 about_layout.addWidget(self.research_about_text)
                 about_layout.addWidget(self.research_profile_detail_text)
                 dashboard.addWidget(about_card, 0, 0, 1, 2)
                 market_card, market_layout = self._card("Key Metrics & Fundamentals", "Provider quote metadata and selected official SEC Company Facts")
+                self.research_metrics_card_title = market_layout.itemAt(0).widget()
+                self.research_metrics_card_subtitle = market_layout.itemAt(1).widget()
                 market_card.setMinimumHeight(155)
                 metric_columns = QHBoxLayout()
                 metric_columns.addWidget(self.research_market_metrics_text, 1)
@@ -1289,14 +1298,22 @@ class RangeScoutWindow:
                 for column in range(5):
                     dashboard.setColumnStretch(column, 1)
                 overview_layout.addLayout(dashboard)
-                detail_card, detail_layout = self._card("Traceable Source Detail", "Provenance remains available without dominating the dashboard")
+                detail_card, detail_layout = self._card("Traceable Source Detail", "Provenance is compact by default and available on demand")
+                self.research_provenance_card = detail_card
+                self.research_provenance_toggle = QPushButton("Show traceable source detail")
+                self.research_provenance_toggle.setCheckable(True)
+                self.research_provenance_toggle.toggled.connect(self._set_research_provenance_expanded)
+                detail_layout.addWidget(self.research_provenance_toggle)
                 table = QTableWidget(0, 5)
                 table.setHorizontalHeaderLabels(["Metric", "Value", "Period / Units", "Source / Filed", "Availability / Selection"])
                 table.setObjectName("research_overview")
                 self._configure_table(table, rows=4)
-                table.setMaximumHeight(170)
+                table.setMaximumHeight(220)
+                table.setVisible(False)
+                self.research_provenance_table = table
                 self.research_tables[section] = table
                 detail_layout.addWidget(table)
+                detail_card.setMaximumHeight(96)
                 overview_layout.addWidget(detail_card)
                 overview_scroll = self._scrollable(overview_content)
                 overview_scroll.setObjectName("research_overview_scroll")
@@ -3199,6 +3216,8 @@ class RangeScoutWindow:
         self._performance_timings["identity_switch_ms"] = (perf_counter() - switch_began) * 1000.0
         if self._auto_network_refresh and hasattr(self, "runtime"):
             self._request_active_history_refresh(force=not bool(snapshot.bars))
+        elif not snapshot.bars:
+            self._set_chart_empty_state("Offline/local mode — no cached price history is available.")
 
     def _clear_symbol_bound_surfaces(self, symbol: str) -> None:
         """Synchronously remove every old-symbol value before new work can complete."""
@@ -3210,6 +3229,7 @@ class RangeScoutWindow:
             chart = getattr(self, chart_name, None)
             if chart is not None:
                 chart.set_series([])
+                chart.set_empty_state(f"Loading {symbol} price history…")
         if hasattr(self, "bars_table"):
             self.bars_table.setRowCount(0)
         loading = f"Loading {symbol} quote…"
@@ -3308,6 +3328,11 @@ class RangeScoutWindow:
         """Compatibility wrapper retained for focused 1.5 cache tests."""
         return self._load_local_symbol_snapshot(symbol).meaningful
 
+    def _set_chart_empty_state(self, message: str) -> None:
+        for name in ("chart", "chart_tab_chart", "live_chart", "research_chart", "scanner_detail_chart"):
+            chart = getattr(self, name, None)
+            if chart is not None and not getattr(chart, "_closes", []):
+                chart.set_empty_state(message)
     def _apply_bars_to_charts(self, bars: list[OhlcvBar]) -> None:
         if not bars:
             return
@@ -3355,6 +3380,38 @@ class RangeScoutWindow:
         state = self.active_symbol.state
         return (state.symbol, state.generation, str(self.research_period_combo.currentData() or "annual"))
 
+    def _set_research_provenance_expanded(self, expanded: bool) -> None:
+        if not hasattr(self, "research_provenance_card"):
+            return
+        self.research_provenance_table.setVisible(bool(expanded))
+        self.research_provenance_card.setMaximumHeight(360 if expanded else 96)
+        self.research_provenance_toggle.setText(
+            "Hide traceable source detail" if expanded else "Show traceable source detail"
+        )
+
+    def _set_research_overview_labels(self, route: ResearchRoute) -> None:
+        if not hasattr(self, "research_profile_card_title"):
+            return
+        if route is ResearchRoute.CORPORATE:
+            profile_title = "COMPANY PROFILE"
+            profile_subtitle = "Official SEC identity and corporate classification"
+            metrics_title = "KEY METRICS & FUNDAMENTALS"
+            metrics_subtitle = "Provider market metadata and applicable official SEC Company Facts"
+        elif route is ResearchRoute.FUND:
+            profile_title = "FUND PROFILE"
+            profile_subtitle = "Official SEC registrant and fund classification"
+            metrics_title = "FUND STRUCTURE & MARKET METRICS"
+            metrics_subtitle = "Provider market metadata and applicable official SEC fund filings"
+        else:
+            profile_title = "INSTRUMENT PROFILE"
+            profile_subtitle = "Canonical market-instrument identity and provider routing"
+            metrics_title = "MARKET METRICS & AVAILABILITY"
+            metrics_subtitle = "Provider quote/history context; corporate SEC facts are not applicable"
+        self.research_profile_card_title.setText(profile_title)
+        self.research_profile_card_subtitle.setText(profile_subtitle)
+        self.research_metrics_card_title.setText(metrics_title)
+        self.research_metrics_card_subtitle.setText(metrics_subtitle)
+
     def _clear_research_context(self, symbol: str) -> None:
         self.research_symbol_avatar.setText(symbol[:4])
         self.research_company_text.setText(f"Loading company profile  •  {symbol}")
@@ -3362,11 +3419,21 @@ class RangeScoutWindow:
         self.research_profile_detail_text.setText("Sector / industry • loading")
         self.research_about_text.setText(f"Loading eligible Research for {symbol}. No values are fabricated.")
         plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        self._set_research_overview_labels(plan.route)
         if plan.route is ResearchRoute.CORPORATE:
+            self.research_market_metrics_text.setText(
+                "Day range loading\n52-week range loading\nMarket cap loading\nAverage volume loading"
+            )
             self.research_key_metrics_text.setText("Revenue loading\nNet income loading\nAssets loading\nEquity loading")
         elif plan.route is ResearchRoute.FUND:
+            self.research_market_metrics_text.setText(
+                "Day range loading\n52-week range loading\nFund market value loading\nAverage volume loading"
+            )
             self.research_key_metrics_text.setText("Fund structure loading\nSEC fund identity loading\nFund filing state loading")
         else:
+            self.research_market_metrics_text.setText(
+                "Day range loading\n52-week range loading\nVolume loading\nCorporate market cap  Not Applicable"
+            )
             self.research_key_metrics_text.setText(
                 f"Instrument type  {self.active_symbol.state.asset_class.replace('_', ' ').title()}\n"
                 "Corporate fundamentals  Not Applicable\nAnalyst outlook  Not Applicable"
@@ -3532,6 +3599,7 @@ class RangeScoutWindow:
         self.research_profile_text.setText(profile_line)
         self.research_profile_detail_text.setText(profile_line)
         plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        self._set_research_overview_labels(plan.route)
         if plan.route is ResearchRoute.CORPORATE:
             self.research_about_text.setText(
                 f"{profile_text} ({snapshot.symbol}) is identified by SEC CIK {profile.cik or 'N/A'}"
@@ -4670,9 +4738,12 @@ class RangeScoutWindow:
                     f"History refresh unavailable; retaining {len(self.current_bars)} cached {request.symbol} bars."
                 )
             else:
+                self._set_chart_empty_state("Price history unavailable from the configured provider.")
                 self.result_text.setText(f"History unavailable for {request.symbol}; quote refresh remains independent.")
             return
         if not bars:
+            self._set_chart_empty_state("No price history was returned by the configured provider.")
+            self.result_text.setText(f"No price history was returned for {request.symbol}; quote refresh remains independent.")
             return
         range_days = int(self.market_days_input.value())
         end = datetime.now(NEW_YORK).date()
@@ -4836,9 +4907,23 @@ class RangeScoutWindow:
             f"Day range  {day_range}\n52-week range  {year_range}\n"
             f"Volume  {volume}\nAverage volume  {average_volume}\nMarket cap  {market_cap}"
         )
-        self.research_market_metrics_text.setText(
-            f"Day range  {day_range}\n52-week range  {year_range}\nMarket cap  {market_cap}\nAverage volume  {average_volume}"
-        )
+        research_plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        if research_plan.route is ResearchRoute.CORPORATE:
+            research_market_text = (
+                f"Day range  {day_range}\n52-week range  {year_range}\n"
+                f"Market cap  {market_cap}\nAverage volume  {average_volume}"
+            )
+        elif research_plan.route is ResearchRoute.FUND:
+            research_market_text = (
+                f"Day range  {day_range}\n52-week range  {year_range}\n"
+                f"Fund market value  {market_cap}\nAverage volume  {average_volume}"
+            )
+        else:
+            research_market_text = (
+                f"Day range  {day_range}\n52-week range  {year_range}\n"
+                f"Volume  {volume}\nCorporate market cap  Not Applicable"
+            )
+        self.research_market_metrics_text.setText(research_market_text)
         self.watchlist_detail_symbol.setText(symbol) if hasattr(self, "watchlist_detail_symbol") else None
         if hasattr(self, "watchlist_detail_price"):
             self.watchlist_detail_price.setText(presentation.text)

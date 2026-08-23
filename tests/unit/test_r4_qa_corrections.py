@@ -44,7 +44,7 @@ def _database(path: Path) -> Path:
         ("Coca Cola", "KO", "KO"), ("Coca-Cola", "KO", "KO"),
         ("Berkshire Hathaway", "BRK.B", None), ("Apple", "AAPL", "AAPL"),
         ("Microsoft", "MSFT", "MSFT"), ("BlackRock Enhanced", "BOE", "BOE"),
-        ("Gold", "GOLD", "GOLD"), ("Gold Spot", "XAU/USD", "XAU/USD"),
+        ("Gold", "XAU/USD", None), ("Gold Spot", "XAU/USD", "XAU/USD"),
         ("EUR/USD", "EUR/USD", "EUR/USD"),
         ("Dow Jones", "^DJI", "^DJI"),
         ("S&P 500", "^GSPC", "^GSPC"), ("Nasdaq", "^IXIC", "^IXIC"),
