@@ -54,7 +54,7 @@ from app.watchlists.manager import WatchlistStore
 from app.research.caching import ResearchCache
 from app.research.fundamentals import ResearchService, SecCompanyFactsClient
 from app.research.models import ResearchSnapshot, ResearchValue
-from app.research.routing import plan_research, route_snapshot
+from app.research.routing import ResearchRoute, plan_research, route_snapshot
 from app.research.analyst import AnalystResult, AnalystService, AnalystState
 from app.security.credentials import ProviderCredentials
 from app.ui.branding import load_application_icon
@@ -1323,8 +1323,22 @@ class RangeScoutWindow:
                 table.setObjectName(f"research_{section.lower().replace(' ', '_')}")
                 self._configure_table(table, rows=12)
                 self.research_tables[section] = table
+                if section == "Analyst Outlook":
+                    self.research_analyst_empty_state = QLabel(
+                        "Analyst data has not loaded yet. Configure an optional provider key to enable supported datasets."
+                    )
+                    self.research_analyst_empty_state.setObjectName("research_analyst_empty_state")
+                    self.research_analyst_empty_state.setWordWrap(True)
+                    self.research_analyst_empty_state.setMinimumHeight(92)
+                    section_layout.addWidget(self.research_analyst_empty_state)
+                    table.setVisible(False)
+                    section_card.setMaximumHeight(260)
                 section_layout.addWidget(table)
-                page_layout.addWidget(section_card)
+                if section == "Analyst Outlook":
+                    page_layout.addWidget(section_card, 0, Qt.AlignmentFlag.AlignTop)
+                    page_layout.addStretch(1)
+                else:
+                    page_layout.addWidget(section_card)
             self.research_tabs.addTab(page, section)
         layout.addWidget(self.research_tabs)
         return tab
@@ -3347,7 +3361,18 @@ class RangeScoutWindow:
         self.research_profile_text.setText("Sector / industry • loading")
         self.research_profile_detail_text.setText("Sector / industry • loading")
         self.research_about_text.setText(f"Loading eligible Research for {symbol}. No values are fabricated.")
-        self.research_key_metrics_text.setText("Revenue loading\nNet income loading\nAssets loading\nEquity loading")
+        plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        if plan.route is ResearchRoute.CORPORATE:
+            self.research_key_metrics_text.setText("Revenue loading\nNet income loading\nAssets loading\nEquity loading")
+        elif plan.route is ResearchRoute.FUND:
+            self.research_key_metrics_text.setText("Fund structure loading\nSEC fund identity loading\nFund filing state loading")
+        else:
+            self.research_key_metrics_text.setText(
+                f"Instrument type  {self.active_symbol.state.asset_class.replace('_', ' ').title()}\n"
+                "Corporate fundamentals  Not Applicable\nAnalyst outlook  Not Applicable"
+            )
+        if hasattr(self, "research_analyst_empty_state"):
+            self._set_analyst_empty_state("Loading analyst availability", "No provider value is inferred.")
         self.current_research_snapshot = None
         self.current_analyst_result = None
         for table in self.research_tables.values():
@@ -3404,7 +3429,9 @@ class RangeScoutWindow:
         self._research_dirty = False
         plan = plan_research(request.asset_class, request.subtype)
         for index in range(self.research_tabs.count()):
-            self.research_tabs.setTabEnabled(index, self.research_tabs.tabText(index) in plan.visible_sections)
+            applicable = self.research_tabs.tabText(index) in plan.visible_sections
+            self.research_tabs.setTabEnabled(index, applicable)
+            self.research_tabs.setTabVisible(index, applicable)
         current_index = self.research_tabs.currentIndex()
         if current_index < 0 or not self.research_tabs.isTabEnabled(current_index):
             for index in range(self.research_tabs.count()):
@@ -3419,6 +3446,8 @@ class RangeScoutWindow:
             self._analyst_status_message = f"Analyst Outlook: checking secure configuration/cache for {request.symbol}…"
         else:
             self._analyst_status_message = f"Analyst Outlook: NOT APPLICABLE — {plan.message}"
+            if hasattr(self, "research_analyst_empty_state"):
+                self._set_analyst_empty_state("Not Applicable", plan.message)
         self._update_research_status()
         task = _ResearchTask(
             self.research_service,
@@ -3502,10 +3531,17 @@ class RangeScoutWindow:
         profile_line = f"Sector / industry • {profile.sic_description or 'N/A'}" + (f" • SIC {profile.sic}" if profile.sic else "")
         self.research_profile_text.setText(profile_line)
         self.research_profile_detail_text.setText(profile_line)
-        self.research_about_text.setText(
-            f"{profile_text} ({snapshot.symbol}) is identified by SEC CIK {profile.cik or 'N/A'}"
-            f" and exchange {profile.exchange or 'N/A'}. Detailed narrative description is N/A from the approved source."
-        )
+        plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        if plan.route is ResearchRoute.CORPORATE:
+            self.research_about_text.setText(
+                f"{profile_text} ({snapshot.symbol}) is identified by SEC CIK {profile.cik or 'N/A'}"
+                f" and exchange {profile.exchange or 'N/A'}. Detailed narrative description is N/A from the approved source."
+            )
+        else:
+            self.research_about_text.setText(
+                f"{profile_text} ({snapshot.symbol}) is a {self.active_symbol.state.asset_class.replace('_', ' ')} instrument. "
+                f"Only Research applicable to this canonical instrument type is shown."
+            )
         self.market_company_text.setText(f"{snapshot.symbol}  •  {profile_text}")
 
         def render(section: str, metric: str) -> str:
@@ -3520,12 +3556,30 @@ class RangeScoutWindow:
                 units.upper() if len(units) == 3 else "USD",
             ).text
 
-        self.research_key_metrics_text.setText(
-            f"Revenue  {render('Overview', 'Revenue')}\n"
-            f"Net income  {render('Overview', 'Net income')}\n"
-            f"Assets  {render('Overview', 'Assets')}\n"
-            f"Equity  {render('Overview', 'Equity')}"
-        )
+        if plan.route is ResearchRoute.CORPORATE:
+            self.research_key_metrics_text.setText(
+                f"Revenue  {render('Overview', 'Revenue')}\n"
+                f"Net income  {render('Overview', 'Net income')}\n"
+                f"Assets  {render('Overview', 'Assets')}\n"
+                f"Equity  {render('Overview', 'Equity')}"
+            )
+        elif plan.route is ResearchRoute.FUND:
+            overview = snapshot.sections.get("Overview", {})
+            structure = overview.get("Instrument structure")
+            registrant = overview.get("SEC registrant")
+            filing = overview.get("Latest fund filing")
+            self.research_key_metrics_text.setText(
+                f"Structure  {structure.value if structure and structure.value else 'Fund'}\n"
+                f"SEC registrant  {registrant.value if registrant and registrant.value else profile_text}\n"
+                f"Latest fund filing  {filing.value if filing and filing.value else 'Unavailable'}\n"
+                "NAV / distributions  Provider Not Supported"
+            )
+        else:
+            self.research_key_metrics_text.setText(
+                f"Instrument type  {self.active_symbol.state.asset_class.replace('_', ' ').title()}\n"
+                "Corporate fundamentals  Not Applicable\n"
+                "Analyst estimates  Not Applicable"
+            )
         for section, table in self.research_tables.items():
             if section == "Analyst Outlook":
                 continue
@@ -3544,22 +3598,30 @@ class RangeScoutWindow:
             for metric, value in calculate_price_performance(self.current_bars).items():
                 self._append_research_value(self.research_tables["Performance"], metric, value)
 
+    def _set_analyst_empty_state(self, title: str, detail: str) -> None:
+        label = self.research_analyst_empty_state
+        label.setText(f"{title}\n{detail}")
+        label.setVisible(True)
+        self.research_tables["Analyst Outlook"].setVisible(False)
+
     def _apply_analyst_result(self, result: AnalystResult) -> None:
         self.current_analyst_result = result
         table = self.research_tables["Analyst Outlook"]
         table.setRowCount(0)
-        for metric, value in result.values.items():
-            self._append_research_value(table, metric, value)
         state_text = ", ".join(
             f"{provider.replace('_', ' ').title()}: {state.value.replace('_', ' ')}"
             for provider, state in result.provider_states.items()
         )
         message = " ".join(result.messages)
-        if not result.values:
-            self._append_research_value(
-                table,
-                "Status",
-                ResearchValue.unavailable("Optional analyst providers", message or "Analyst data is unavailable."),
+        if result.values:
+            self.research_analyst_empty_state.setVisible(False)
+            table.setVisible(True)
+            for metric, value in result.values.items():
+                self._append_research_value(table, metric, value)
+        else:
+            self._set_analyst_empty_state(
+                state_text.title() if state_text else "Analyst Data Unavailable",
+                message or "Configure an optional supported provider key, or use a cached entitled dataset.",
             )
         self._analyst_status_message = f"Analyst Outlook: {state_text or 'unavailable'}"
         if message:
@@ -3586,8 +3648,8 @@ class RangeScoutWindow:
                 if state is not None
                 else (f"Configured — {capability} refresh pending" if configured else f"Missing API key — {capability} unavailable")
             )
-            states.append(f"{label} — {detail}")
-        self.market_analyst_text.setText("\n".join(states))
+            states.append(f"{label}\n  Status: {detail}\n  Capability: {capability.title()}")
+        self.market_analyst_text.setText("\n\n".join(states))
 
     @staticmethod
     def _market_research_values(quote: QuoteSnapshot) -> dict[str, ResearchValue]:

@@ -13,7 +13,7 @@ def normalize_symbol(value: object) -> str:
     symbol = str(value).strip().upper()
     if not symbol:
         raise ValueError("Active Symbol cannot be empty.")
-    if len(symbol) > 32 or not all(character.isalnum() or character in {".", "-", "^", "/"} for character in symbol):
+    if len(symbol) > 32 or not all(character.isalnum() or character in {".", "-", "^", "/", "$"} for character in symbol):
         raise ValueError("Active Symbol contains unsupported characters.")
     return symbol
 

@@ -42,3 +42,7 @@ def test_symbol_validation_rejects_empty_and_unsupported_characters() -> None:
         else:
             raise AssertionError(f"Expected {value!r} to be rejected")
 
+
+
+def test_normalize_symbol_accepts_exchange_preferred_separator():
+    assert normalize_symbol("mtb$j") == "MTB$J"

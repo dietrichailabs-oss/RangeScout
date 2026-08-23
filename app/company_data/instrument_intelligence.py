@@ -11,6 +11,8 @@ import re
 import sqlite3
 from typing import Callable, Iterable, Mapping
 
+from app.ui.branding import application_resource_root
+
 
 _SPACE = re.compile(r"[^a-z0-9]+")
 _SUFFIX = re.compile(r"\b(?:incorporated|inc|corporation|corp|company|co|limited|ltd|plc|holdings?|group)\b\.?,?", re.I)
@@ -20,8 +22,9 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 2
-_REFERENCE_TIME = "2026-08-22T00:00:00+00:00"
+_REFERENCE_VERSION = 3
+_REFERENCE_TIME = "2026-08-23T00:00:00+00:00"
+_CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
 
 
 def normalize_search_text(value: object) -> str:
@@ -39,11 +42,31 @@ def canonical_asset_class(asset_class: object, subtype: object = "", security_ty
 
     asset = str(asset_class or "unknown").strip().lower().replace(" ", "_")
     detail = " ".join((str(subtype or ""), str(security_type or ""), str(name or ""))).lower()
-    if str(subtype or "").strip().lower() == "closed_end_fund":
+    declared_type = str(security_type or subtype or "").strip().lower().replace("-", "_").replace(" ", "_")
+    normalized_subtype = str(subtype or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized_subtype == "closed_end_fund":
         return "closed_end_fund"
     if asset in {"stock", "common_stock"}:
-        if "preferred" in detail or "depositary share" in detail:
+        if declared_type in {"warrant", "warrants"}:
+            return "warrant"
+        if declared_type in {"right", "rights"}:
+            return "right"
+        if declared_type in {"unit", "units"}:
+            return "unit"
+        if declared_type in {"depositary_share", "depositary_shares", "depositary_receipt", "depositary_receipts"}:
+            return "adr"
+        if declared_type in {"preferred_stock", "preferred_share", "preferred_shares"}:
             return "preferred"
+        if "warrant" in detail:
+            return "warrant"
+        if re.search(r"\brights?\b", detail):
+            return "right"
+        if re.search(r"\bunits?\b", detail):
+            return "unit"
+        if "preferred" in detail:
+            return "preferred"
+        if "depositary share" in detail or "depositary receipt" in detail or "american depositary" in detail:
+            return "adr"
         if _looks_like_closed_end_fund(str(name or ""), str(security_type or "")):
             return "closed_end_fund"
         return "equity"
@@ -51,6 +74,8 @@ def canonical_asset_class(asset_class: object, subtype: object = "", security_ty
         "exchange_traded_fund": "etf", "closed-end_fund": "closed_end_fund",
         "physical_currency": "fx", "digital_currency": "crypto_spot",
         "commodity": "commodity_spot", "precious_metal_spot": "commodity_spot",
+        "depositary_share": "adr", "depositary_receipt": "adr",
+        "preferred_stock": "preferred", "common_equity": "equity",
     }
     return aliases.get(asset, asset)
 
@@ -232,6 +257,7 @@ class InstrumentReferenceSeeder:
                            WHERE instrument_id=?""",
                         (_REFERENCE_TIME, int(row["instrument_id"])),
                     )
+            self._apply_authoritative_classifications(con)
             con.execute(
                 "INSERT OR REPLACE INTO rs_schema_meta(key,value,updated_at_utc) VALUES('instrument_reference_version',?,?)",
                 (str(_REFERENCE_VERSION), _REFERENCE_TIME),
@@ -241,6 +267,47 @@ class InstrumentReferenceSeeder:
             changed = con.total_changes - changed_before
             con.commit()
             return changed
+
+    @staticmethod
+    def _apply_authoritative_classifications(con: sqlite3.Connection) -> None:
+        """Apply frozen official classifications by CIK, never by symbol."""
+
+        path = application_resource_root() / "resources" / _CLASSIFICATION_FILENAME
+        if not path.is_file():
+            return
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for record in payload.get("classifications", ()):
+            cik = str(record.get("cik") or "").strip().zfill(10)
+            if not cik:
+                continue
+            rows = con.execute(
+                "SELECT instrument_id,asset_class,security_type,security_name FROM rs_instruments WHERE cik=? AND is_active=1",
+                (cik,),
+            ).fetchall()
+            for row in rows:
+                explicit = canonical_asset_class(
+                    row["asset_class"], row["security_type"], row["security_type"], row["security_name"]
+                )
+                if explicit in {"preferred", "warrant", "right", "unit", "adr", "etf"}:
+                    continue
+                instrument_id = int(row["instrument_id"])
+                asset = str(record["asset_class"])
+                subtype = str(record.get("instrument_subtype") or asset)
+                evidence = json.dumps(record.get("evidence_forms") or (), sort_keys=True)
+                con.execute(
+                    """INSERT OR REPLACE INTO rs_instrument_classifications(
+                       instrument_id,asset_class,instrument_subtype,source_id,authority_level,
+                       evidence_type,evidence_value,source_url,verified_at_utc,is_active)
+                       VALUES(?,?,?,?,?,?,?,?,?,1)""",
+                    (instrument_id, asset, subtype, str(record["source_id"]), "official",
+                     "sec_form_history", evidence, str(record["source_url"]), str(record["verified_at_utc"])),
+                )
+                con.execute(
+                    """UPDATE rs_instruments SET asset_class=?,instrument_subtype=?,
+                       metadata_source=?,metadata_verified_utc=?,updated_at_utc=? WHERE instrument_id=?""",
+                    (asset, subtype, str(record["source_id"]), str(record["verified_at_utc"]),
+                     str(record["verified_at_utc"]), instrument_id),
+                )
 
     @staticmethod
     def _insert_alias(con: sqlite3.Connection, instrument_id: int, alias: str, venue: str, kind: str, boost: int) -> None:
@@ -265,13 +332,27 @@ class InstrumentResolver:
 
     def search(self, query: str, limit: int = 12) -> list[InstrumentMatch]:
         raw = str(query or "").strip()
-        if len(raw) < 2 or len(raw) > 160:
+        if not raw or len(raw) > 160:
             return []
         upper, normalized = raw.upper(), normalize_search_text(raw)
         token = f"%{raw}%"
         compact = "%" + re.sub(r"[^A-Z0-9]", "", upper) + "%"
         with closing(sqlite3.connect(self.path, timeout=10)) as con:
             con.row_factory = sqlite3.Row
+            exact_rows = con.execute(
+                """SELECT i.*,GROUP_CONCAT(a.alias_symbol,'|') aliases,
+                          GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
+                          MAX(COALESCE(a.ranking_boost,0)) alias_boost
+                   FROM rs_instruments i LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
+                   WHERE UPPER(i.canonical_symbol)=? AND i.is_active=1
+                   GROUP BY i.instrument_id ORDER BY i.search_priority DESC,i.instrument_id DESC""",
+                (upper,),
+            ).fetchall()
+            if exact_rows:
+                exact = [self._match(con, row, raw, upper, normalized) for row in exact_rows]
+                return exact[:max(1, min(50, int(limit)))]
+            if len(raw) < 2:
+                return []
             rows = con.execute(
                 """SELECT i.*,GROUP_CONCAT(a.alias_symbol,'|') aliases,
                           GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
@@ -288,7 +369,11 @@ class InstrumentResolver:
             ).fetchall()
             matches = [self._match(con, row, raw, upper, normalized) for row in rows]
         ranked = [item for item in matches if item.score > 0]
-        ranked.sort(key=lambda item: (-item.score, -item.instrument.instrument_id, item.symbol, item.exchange))
+        identity_tier = {"exact_symbol": 0, "exact_alias": 1}
+        ranked.sort(key=lambda item: (
+            identity_tier.get(item.match_kind, 2), -item.score,
+            -item.instrument.instrument_id, item.symbol, item.exchange,
+        ))
         return ranked[:max(1, min(50, int(limit)))]
 
     def resolve_unique(self, query: str) -> InstrumentMatch | None:
@@ -297,7 +382,12 @@ class InstrumentResolver:
             return None
         first, second = results[0], results[1] if len(results) > 1 else None
         if first.match_kind in {"exact_symbol", "exact_alias"}:
-            return first
+            exact = [item for item in results if item.match_kind == first.match_kind
+                     and item.matched_text.upper() == first.matched_text.upper()]
+            return first if len({item.instrument.identity for item in exact}) == 1 else None
+        if first.match_kind == "exact_name":
+            exact_names = [item for item in results if item.match_kind == "exact_name"]
+            return first if len({item.instrument.identity for item in exact_names}) == 1 else None
         first_role = _security_role(first.instrument.asset_class, first.instrument.subtype, "", first.symbol, first.name)
         if first_role == "alternate_security":
             return None
@@ -378,9 +468,9 @@ class InstrumentResolver:
         role = _security_role(canonical_asset, subtype, security_type, symbol, name)
         priority = int(row["search_priority"] or 0) + int(row["alias_boost"] or 0)
         if upper == symbol:
-            score, kind, matched = 1200, "exact_symbol", symbol
+            score, kind, matched = 1_000_000, "exact_symbol", symbol
         elif upper in alias_upper:
-            score, kind, matched = 1140, "exact_alias", next(v for v in aliases if v.upper() == upper)
+            score, kind, matched = 900_000, "exact_alias", next(v for v in aliases if v.upper() == upper)
         elif raw.casefold() == name.casefold():
             score, kind, matched = 1080, "exact_name", name
         elif normalized and (normalized == issuer_norm or normalized_compact == issuer_compact):
@@ -399,7 +489,7 @@ class InstrumentResolver:
             ratio = SequenceMatcher(None, normalized, name_norm).ratio() if len(normalized) >= 4 else 0
             score, kind, matched = (int(560 * ratio), "fuzzy", name) if ratio >= .86 else (0, "none", "")
         intent_adjustment = (
-            0 if kind in {"exact_symbol", "exact_alias"}
+            0 if kind in {"exact_symbol", "exact_alias", "exact_name"}
             else 190 if role == "primary_common"
             else -260 if role == "alternate_security"
             else 0
