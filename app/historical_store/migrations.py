@@ -14,9 +14,10 @@ from app.historical_store.schema_v8 import MIGRATION_8_SQL
 from app.historical_store.schema_v9 import MIGRATION_9_SQL
 from app.historical_store.schema_v10 import MIGRATION_10_SQL
 from app.historical_store.schema_v11 import MIGRATION_11_SQL
+from app.historical_store.schema_v12 import MIGRATION_12_SQL, repair_r8_discovery_duplicates
 
 
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 12
 
 
 def current_schema_version() -> int:
@@ -37,6 +38,7 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
         9: MIGRATION_9_SQL,
         10: MIGRATION_10_SQL,
         11: MIGRATION_11_SQL,
+        12: MIGRATION_12_SQL,
     }
     for target in range(existing_version + 1, CURRENT_SCHEMA_VERSION + 1):
         connection.execute("BEGIN IMMEDIATE")
@@ -55,6 +57,8 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
                         if target in {5, 6, 8, 11} and "duplicate column name" in str(exc).lower():
                             continue
                         raise
+            if target == 12:
+                repair_r8_discovery_duplicates(connection)
             connection.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(target),),

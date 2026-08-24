@@ -12,6 +12,20 @@ from app.ui.branding import application_resource_root
 
 MASTER_FILENAME = "RangeScout_Company_Master.sqlite"
 
+_VENUE_NORMALIZATION = {
+    "Q": "NASDAQ", "XNAS": "NASDAQ", "NASDAQ": "NASDAQ",
+    "N": "NYSE", "XNYS": "NYSE", "NYSE": "NYSE",
+    "P": "NYSE ARCA", "ARCX": "NYSE ARCA", "NYSE ARCA": "NYSE ARCA",
+    "A": "NYSE AMERICAN", "XASE": "NYSE AMERICAN", "NYSE AMERICAN": "NYSE AMERICAN",
+    "Z": "CBOE BZX", "BATS": "CBOE BZX", "CBOE BZX": "CBOE BZX",
+    "V": "IEX", "IEXG": "IEX", "IEX": "IEX",
+}
+
+
+def _canonical_venue(value: object) -> str:
+    raw = str(value or "").strip().upper()
+    return _VENUE_NORMALIZATION.get(raw, raw)
+
 
 @dataclass(frozen=True, slots=True)
 class CompanyMasterProvisionReport:
@@ -76,31 +90,54 @@ def provision_company_master(target_database: Path | str, master_database: Path 
                     row["retrieved_utc"], None, row["retrieved_utc"], row["retrieved_utc"],
                 ),
             )
-        before = destination.total_changes
-        destination.executemany(
-            """INSERT INTO rs_instruments(
-                       canonical_symbol,security_name,asset_class,security_type,primary_venue,mic_code,
-                       currency,country_code,cik,listing_date,is_active,first_seen_utc,last_seen_utc,
-                       metadata_updated_utc,created_at_utc,updated_at_utc,sector,industry,website_domain)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(canonical_symbol,primary_venue,asset_class) DO NOTHING""",
-            tuple(
-                tuple(row[column] for column in (
-                    "canonical_symbol", "security_name", "asset_class", "security_type", "primary_venue",
-                    "mic_code", "currency", "country_code", "cik", "listing_date", "is_active",
-                    "source_date", "source_date", "source_date", "source_date", "source_date",
-                    "sector", "industry", "website_domain",
-                ))
-                for row in records
-            ),
-        )
-        added = destination.total_changes - before
-        instrument_ids = {
-            (row["canonical_symbol"], row["primary_venue"], row["asset_class"]): row["instrument_id"]
-            for row in destination.execute(
-                "SELECT instrument_id,canonical_symbol,primary_venue,asset_class FROM rs_instruments"
+        added = 0
+        existing = {}
+        for existing_row in destination.execute(
+            """SELECT instrument_id,canonical_symbol,primary_venue,is_active
+               FROM rs_instruments ORDER BY is_active DESC,instrument_id"""
+        ):
+            existing.setdefault(
+                (existing_row["canonical_symbol"], _canonical_venue(existing_row["primary_venue"])),
+                int(existing_row["instrument_id"]),
             )
-        }
+        instrument_ids = {}
+        for row in records:
+            identity = (row["canonical_symbol"], _canonical_venue(row["primary_venue"]))
+            instrument_id = existing.get(identity)
+            if instrument_id is None:
+                cursor = destination.execute(
+                    """INSERT INTO rs_instruments(
+                           canonical_symbol,security_name,asset_class,security_type,primary_venue,mic_code,
+                           currency,country_code,cik,listing_date,is_active,first_seen_utc,last_seen_utc,
+                           metadata_updated_utc,created_at_utc,updated_at_utc,sector,industry,website_domain)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    tuple(row[column] for column in (
+                        "canonical_symbol", "security_name", "asset_class", "security_type", "primary_venue",
+                        "mic_code", "currency", "country_code", "cik", "listing_date", "is_active",
+                        "source_date", "source_date", "source_date", "source_date", "source_date",
+                        "sector", "industry", "website_domain",
+                    )),
+                )
+                instrument_id = int(cursor.lastrowid)
+                existing[identity] = instrument_id
+                added += 1
+            else:
+                # Classification and venue notation are reference facts, while the
+                # user-visible name and enrichment fields may be locally curated.
+                destination.execute(
+                    """UPDATE rs_instruments SET asset_class=?,security_type=?,primary_venue=?,
+                           mic_code=COALESCE(?,mic_code),currency=COALESCE(?,currency),
+                           country_code=COALESCE(?,country_code),cik=COALESCE(?,cik),
+                           listing_date=COALESCE(?,listing_date),is_active=?,last_seen_utc=?,
+                           metadata_updated_utc=?,updated_at_utc=? WHERE instrument_id=?""",
+                    (
+                        row["asset_class"], row["security_type"], row["primary_venue"], row["mic_code"],
+                        row["currency"], row["country_code"], row["cik"], row["listing_date"],
+                        row["is_active"], row["source_date"], row["source_date"], row["source_date"],
+                        instrument_id,
+                    ),
+                )
+            instrument_ids[(row["canonical_symbol"], row["primary_venue"], row["asset_class"])] = instrument_id
         alias_before = destination.total_changes
         destination.executemany(
             """INSERT OR IGNORE INTO rs_instrument_aliases(

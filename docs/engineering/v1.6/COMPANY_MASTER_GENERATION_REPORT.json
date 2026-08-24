@@ -4,8 +4,14 @@
   "contains_credentials": false,
   "contains_market_prices": false,
   "counts_by_asset_class": {
-    "etf": 5639,
-    "stock": 10737
+    "adr": 706,
+    "equity": 8666,
+    "etf": 5617,
+    "etn": 31,
+    "preferred": 427,
+    "right": 124,
+    "unit": 364,
+    "warrant": 441
   },
   "counts_by_exchange_venue": {
     "Cboe BZX": 1609,
@@ -128,10 +134,10 @@
     }
   },
   "master_path": "RangeScout_Company_Master.sqlite",
-  "master_sha256": "D36AD75778BFDC3ED3C5E779B6817C9667D84C70E41C7FF95C72B1AF8E66124B",
-  "master_size_bytes": 8835072,
-  "master_version": 3,
-  "parser_version": "rangescout-company-master-v3",
+  "master_sha256": "69E632ECEA99D25CC405389CCABE5B5487EE63A039BEE9F69B2C66E7EB04B5CA",
+  "master_size_bytes": 8888320,
+  "master_version": 4,
+  "parser_version": "rangescout-company-master-v4",
   "pass": true,
   "schema": "rangescout.company-master-generation.v2"
 }

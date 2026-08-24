@@ -13,6 +13,9 @@ from typing import Callable, Iterable, Mapping
 
 from app.ui.branding import application_resource_root
 from app.market_data.provider_symbols import derive_yahoo_provider_symbol, is_placeholder_symbol
+from app.instruments.security_classification import (
+    classify_official_security, has_explicit_etf_marker, has_explicit_etn_marker,
+)
 
 
 _SPACE = re.compile(r"[^a-z0-9]+")
@@ -67,8 +70,17 @@ def canonical_asset_class(asset_class: object, subtype: object = "", security_ty
     detail = " ".join((str(subtype or ""), str(security_type or ""), str(name or ""))).lower()
     declared_type = str(security_type or subtype or "").strip().lower().replace("-", "_").replace(" ", "_")
     normalized_subtype = str(subtype or "").strip().lower().replace("-", "_").replace(" ", "_")
+    explicit = classify_official_security(name, provider_etp_flag=asset in {"etf", "exchange_traded_fund"})
+    if has_explicit_etn_marker(name):
+        return "etn"
+    if has_explicit_etf_marker(name):
+        return "etf"
     if normalized_subtype == "closed_end_fund":
         return "closed_end_fund"
+    if explicit.asset_class in {"warrant", "right", "unit", "preferred", "adr"}:
+        return explicit.asset_class
+    if explicit.asset_class == "equity" and has_common_security_marker(name):
+        return "equity"
     if asset in {"stock", "common_stock"}:
         if declared_type in {"warrant", "warrants"}:
             return "warrant"
@@ -105,6 +117,8 @@ def canonical_asset_class(asset_class: object, subtype: object = "", security_ty
 
 def _looks_like_closed_end_fund(name: str, security_type: str = "") -> bool:
     factual = f"{name} {security_type}".upper()
+    if has_explicit_etn_marker(name) or has_explicit_etf_marker(name):
+        return False
     if "CLOSED-END FUND" in factual or "CLOSED END FUND" in factual:
         return True
     fund_terms = (" FUND", " ENHANCED ", " DIVIDEND ", " INCOME ", " MUNICIPAL ", " CREDIT ", " OPPORTUNITIES ")
@@ -305,6 +319,7 @@ class InstrumentReferenceSeeder:
                 for row in rows[:1]:
                     self._insert_alias(con, int(row[0]), alias, venue, kind, 35)
             self._apply_source_hygiene(con)
+            self._apply_shared_security_semantics(con)
             rows = con.execute(
                 "SELECT instrument_id,security_name,security_type FROM rs_instruments WHERE is_active=1"
             ).fetchall()
@@ -346,6 +361,42 @@ class InstrumentReferenceSeeder:
                 (_REFERENCE_TIME, _REFERENCE_TIME, instrument_id),
             )
             con.execute("UPDATE rs_provider_symbols SET is_active=0 WHERE instrument_id=?", (instrument_id,))
+
+    @staticmethod
+    def _apply_shared_security_semantics(con: sqlite3.Connection) -> None:
+        """Correct listing semantics with the same policy used by build and discovery."""
+
+        supported = {"stock", "equity", "preferred", "adr", "warrant", "right", "unit", "etf", "etn", "closed_end_fund"}
+        rows = con.execute(
+            """SELECT instrument_id,asset_class,security_type,instrument_subtype,security_name
+               FROM rs_instruments WHERE is_active=1 ORDER BY instrument_id"""
+        ).fetchall()
+        subtype_by_asset = {
+            "equity": "common_stock", "etf": "exchange_traded_fund", "etn": "exchange_traded_note",
+            "preferred": "preferred_stock", "adr": "depositary_share", "warrant": "warrant",
+            "right": "right", "unit": "unit",
+        }
+        for row in rows:
+            current_asset = str(row["asset_class"] or "").lower()
+            if current_asset not in supported:
+                continue
+            decision = classify_official_security(
+                row["security_name"], provider_etp_flag=current_asset == "etf"
+            )
+            subtype = subtype_by_asset[decision.asset_class]
+            if (
+                current_asset == decision.asset_class
+                and str(row["security_type"] or "") == decision.security_type
+                and str(row["instrument_subtype"] or "") == subtype
+            ):
+                continue
+            con.execute(
+                """UPDATE rs_instruments SET asset_class=?,security_type=?,instrument_subtype=?,
+                   issuer_entity_type='unknown',security_role='unknown',metadata_source='shared_official_classifier',
+                   metadata_verified_utc=?,updated_at_utc=? WHERE instrument_id=?""",
+                (decision.asset_class, decision.security_type, subtype, _REFERENCE_TIME, _REFERENCE_TIME,
+                 int(row["instrument_id"])),
+            )
 
     @staticmethod
     def _apply_entity_defaults(con: sqlite3.Connection) -> None:
@@ -590,6 +641,7 @@ class InstrumentResolver:
         if not results:
             return None
         first, second = results[0], results[1] if len(results) > 1 else None
+
         identity_matches = [
             item for item in results
             if item.match_kind in {"exact_symbol", "exact_alias"}
@@ -618,7 +670,12 @@ class InstrumentResolver:
     def by_id(self, instrument_id: int) -> CanonicalInstrument | None:
         with closing(sqlite3.connect(self.path, timeout=10)) as con:
             con.row_factory = sqlite3.Row
-            row = con.execute("SELECT * FROM rs_instruments WHERE instrument_id=?", (int(instrument_id),)).fetchone()
+            merge = con.execute(
+                "SELECT survivor_instrument_id FROM rs_instrument_identity_merges WHERE old_instrument_id=?",
+                (int(instrument_id),),
+            ).fetchone()
+            resolved_id = int(merge[0]) if merge is not None else int(instrument_id)
+            row = con.execute("SELECT * FROM rs_instruments WHERE instrument_id=?", (resolved_id,)).fetchone()
             return self._instrument(con, row) if row else None
 
     def enrich_provider_results(self, provider_id: str, rows: Iterable[Mapping[str, object]]) -> int:

@@ -8,7 +8,7 @@ class ProductIdentity:
     name: str = "RangeScout"
     company: str = "Dietrich AI Labs"
     version: str = "1.6.2"
-    build_identity: str = "rs-v1.6.2-semantic-routing-r8"
+    build_identity: str = "rs-v1.6.2-discovery-merge-r9"
     publisher: str = "Dietrich AI Labs"
 
 

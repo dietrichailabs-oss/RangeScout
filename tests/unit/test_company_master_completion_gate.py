@@ -81,14 +81,22 @@ def test_upgrade_is_additive_idempotent_and_retains_source_provenance(tmp_path: 
     first = provision_company_master(target)
     assert not first.already_current
     with sqlite3.connect(target) as connection:
-        connection.execute("UPDATE rs_instruments SET security_name='User Curated Apple' WHERE canonical_symbol='AAPL'")
+        apple_id = connection.execute("SELECT instrument_id FROM rs_instruments WHERE canonical_symbol='AAPL'").fetchone()[0]
+        connection.execute(
+            """UPDATE rs_instruments SET security_name='User Curated Apple',asset_class='warrant',
+               security_type='Warrant',primary_venue='Q' WHERE instrument_id=?""", (apple_id,)
+        )
         connection.execute("UPDATE rs_schema_meta SET value='1' WHERE key='company_master_seed_version'")
         connection.commit()
     second = provision_company_master(target)
     third = provision_company_master(target)
     assert not second.already_current and third.already_current
     with sqlite3.connect(target) as connection:
-        assert connection.execute("SELECT security_name FROM rs_instruments WHERE canonical_symbol='AAPL'").fetchone()[0] == "User Curated Apple"
+        apple = connection.execute(
+            "SELECT instrument_id,security_name,asset_class,security_type,primary_venue FROM rs_instruments WHERE canonical_symbol='AAPL' AND is_active=1"
+        ).fetchone()
+        assert apple == (apple_id, "User Curated Apple", "equity", "Common Stock", "NASDAQ")
+        assert connection.execute("SELECT COUNT(*) FROM rs_instruments WHERE canonical_symbol='AAPL' AND is_active=1").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM rs_instrument_reference_sources").fetchone()[0] >= 20_000
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

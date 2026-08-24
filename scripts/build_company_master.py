@@ -22,11 +22,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.market_data.provider_symbols import is_placeholder_symbol
+from app.instruments.security_classification import classify_official_security
 DEFAULT_INPUT = ROOT / "docs" / "engineering" / "v1.6" / "company_master_sources"
 DEFAULT_OUTPUT = ROOT / "resources" / "RangeScout_Company_Master.sqlite"
 DEFAULT_REPORT = ROOT / "docs" / "engineering" / "v1.6" / "COMPANY_MASTER_GENERATION_REPORT.json"
-PARSER_VERSION = "rangescout-company-master-v3"
-MASTER_VERSION = 3
+PARSER_VERSION = "rangescout-company-master-v4"
+MASTER_VERSION = 4
 
 SOURCE_FILES = {
     "sec_company_tickers_exchange": "sec_company_tickers_exchange.json",
@@ -113,17 +114,8 @@ def _valid_symbol(value: str) -> bool:
 
 
 def _security_type(name: str, is_etf: bool = False) -> tuple[str, str]:
-    lowered = name.lower()
-    if is_etf or " exchange traded fund" in lowered or lowered.endswith(" etf") or " etf " in lowered:
-        return "etf", "Exchange Traded Fund"
-    for token, label in (
-        ("warrant", "Warrant"), ("subscription right", "Right"), (" rights", "Right"),
-        (" unit", "Unit"), ("preferred", "Preferred Stock"), ("depositary", "Depositary Share"),
-        ("ordinary share", "Ordinary Share"), ("common stock", "Common Stock"),
-    ):
-        if token in lowered:
-            return "stock", label
-    return "stock", "Listed Security"
+    decision = classify_official_security(name, provider_etp_flag=is_etf)
+    return decision.asset_class, decision.security_type
 
 
 def _source_date_from_footer(path: Path) -> str | None:

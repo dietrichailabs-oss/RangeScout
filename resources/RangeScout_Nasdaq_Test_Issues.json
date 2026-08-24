@@ -1,0 +1,215 @@
+{
+  "count": 33,
+  "derivation": "Rows whose official Nasdaq Trader Test Issue field equals Y",
+  "rows": [
+    {
+      "official_test_issue": "Y",
+      "security_name": "Tick Pilot Test Control Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ATEST"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Tick Pilot Test Group 1 Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ATEST.A"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Tick pilot Test 2 Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ATEST.B"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Tick Pilot Test 3 Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ATEST.C"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "CBO (Listing Market - NYSE - Networks A/E) Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CBO"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "CBX (Listing Market NYSE Networks AE) Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CBX"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Test One Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CTEST"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Test One Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CTEST.E"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Test One Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CTEST.G"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Test One Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CTEST.L"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Test One Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CTEST.O"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Test Six Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CTEST.S"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Test One Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "CTEST.V"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "IGZ (Listing Market NYSE Arca Network B F) Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "IGZ"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Texas, Inc. TEST Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "MTEST"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Tick Pilot Test Sym-Control",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "NTEST"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Tick Pilot Test Sym-G1",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "NTEST.A"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE Tick Pilot Test Sym-G2",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "NTEST.B"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Tick Pilot Test C Common Stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "NTEST.C"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Tick Pilot Test Stock Class A Common Stock",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZAZZT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "BATS BZX Exchange test issue",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ZBZX"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Test Pilot Test Stock Class B Common Stock",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZBZZT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Tick Pilot Test Stock Class C",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZCZZT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "IEX Test Company Test Symbol Two for IEX",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ZEXIT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "IEX Test Company Test Symbol One for IEX",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ZIEXT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NASDAQ TEST STOCK",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZJZZT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "BATS BZX Exchange Common Stock (test issue)",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ZTEST"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NYSE ARCA test stock",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ZVV"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NASDAQ TEST STOCK",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZVZZT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NASDAQ TEST STOCK",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZWZZT"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "IEX Test Company Test Symbol Three for IEX",
+      "source_file": "nasdaq_otherlisted.txt",
+      "symbol": "ZXIET"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "Nasdaq Symbology Test Common Stock",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZXYZ.A"
+    },
+    {
+      "official_test_issue": "Y",
+      "security_name": "NASDAQ TEST STOCK",
+      "source_file": "nasdaq_nasdaqlisted.txt",
+      "symbol": "ZXZZT"
+    }
+  ],
+  "schema": "rangescout.nasdaq-test-issue-reference.v1",
+  "sources": [
+    {
+      "filename": "nasdaq_nasdaqlisted.txt",
+      "sha256": "B2FD1D68CAAF80458A62C88C3A3020630E98675085E601E9AABBB820E6A7D240"
+    },
+    {
+      "filename": "nasdaq_otherlisted.txt",
+      "sha256": "B56266057A944866F7F74E02189030E457A0BF4AD9DF79D3CF31185B43FA7E1A"
+    }
+  ]
+}

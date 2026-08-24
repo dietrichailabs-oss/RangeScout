@@ -17,10 +17,28 @@ from urllib.request import Request, urlopen
 
 from app.market_data.contracts import AssetClass
 from app.market_data.instruments import DiscoveredInstrument
+from app.instruments.security_classification import classify_official_security
 
 
 WEEK_SECONDS = 7 * 24 * 60 * 60
 
+_VENUE_NORMALIZATION = {
+    "Q": ("NASDAQ", "XNAS"), "NASDAQ": ("NASDAQ", "XNAS"), "XNAS": ("NASDAQ", "XNAS"),
+    "N": ("NYSE", "XNYS"), "NYSE": ("NYSE", "XNYS"), "XNYS": ("NYSE", "XNYS"),
+    "P": ("NYSE Arca", "ARCX"), "NYSE ARCA": ("NYSE Arca", "ARCX"), "ARCX": ("NYSE Arca", "ARCX"),
+    "A": ("NYSE American", "XASE"), "NYSE AMERICAN": ("NYSE American", "XASE"), "XASE": ("NYSE American", "XASE"),
+    "Z": ("Cboe BZX", "BATS"), "CBOE BZX": ("Cboe BZX", "BATS"), "BATS": ("Cboe BZX", "BATS"),
+    "V": ("IEX", "IEXG"), "IEX": ("IEX", "IEXG"), "IEXG": ("IEX", "IEXG"),
+}
+
+
+def normalize_listing_venue(value: object) -> tuple[str, str | None]:
+    raw = str(value or "").strip()
+    return _VENUE_NORMALIZATION.get(raw.upper(), (raw, None))
+
+
+def normalize_listing_name(value: object) -> str:
+    return " ".join(str(value or "").casefold().split())
 
 @dataclass(frozen=True)
 class DiscoveryReport:
@@ -37,24 +55,9 @@ class DiscoveryReport:
 
 
 def classify_nasdaq_row(row: dict[str, str]) -> tuple[AssetClass, str]:
-    name = row.get("Security Name", row.get("SecurityName", "")).upper()
-    issue = row.get("ETF", "N").upper()
-    symbol = row.get("Symbol", row.get("ACT Symbol", "")).upper()
-    if issue == "Y" or " ETF" in name or "EXCHANGE TRADED FUND" in name:
-        return AssetClass.ETF, "ETF"
-    if " ETN" in name or "EXCHANGE TRADED NOTE" in name:
-        return AssetClass.ETN, "ETN"
-    if " WARRANT" in name or symbol.endswith("W"):
-        return AssetClass.WARRANT, "Warrant"
-    if " RIGHT" in name:
-        return AssetClass.RIGHT, "Right"
-    if " UNIT" in name:
-        return AssetClass.UNIT, "Unit"
-    if " PREFERRED" in name or " PFD" in name:
-        return AssetClass.PREFERRED, "Preferred"
-    if " ADR" in name or "DEPOSITARY" in name:
-        return AssetClass.ADR, "ADR"
-    return AssetClass.EQUITY, "Common Stock"
+    name = row.get("Security Name", row.get("SecurityName", ""))
+    decision = classify_official_security(name, provider_etp_flag=row.get("ETF", "N").upper() == "Y")
+    return AssetClass(decision.asset_class), decision.security_type
 
 
 def parse_nasdaq_directory(text: str, venue: str) -> tuple[list[DiscoveredInstrument], int]:
@@ -72,9 +75,11 @@ def parse_nasdaq_directory(text: str, venue: str) -> tuple[list[DiscoveredInstru
             errors += 1
             continue
         row = dict(zip(headers, values))
+        if str(row.get("Test Issue") or "").strip().upper() == "Y":
+            continue
         symbol = row.get("Symbol") or row.get("ACT Symbol") or row.get("NASDAQ Symbol") or ""
         name = row.get("Security Name") or row.get("SecurityName") or ""
-        row_venue = row.get("Exchange") or venue
+        row_venue, _mic = normalize_listing_venue(row.get("Exchange") or venue)
         try:
             asset_class, security_type = classify_nasdaq_row(row)
             results.append(
@@ -131,9 +136,12 @@ class InstrumentDiscovery:
                 (source_id, display_name, "official_directory", official_url, WEEK_SECONDS, stamp, stamp),
             )
             before = connection.execute(
-                """SELECT COUNT(DISTINCT i.instrument_id) FROM rs_instruments i
-                   JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id WHERE a.source_id=?""",
-                (source_id,),
+                """SELECT COUNT(*) FROM rs_instruments i WHERE i.is_active=1 AND (
+                   EXISTS(SELECT 1 FROM rs_instrument_reference_sources r
+                          WHERE r.instrument_id=i.instrument_id AND r.source_id=?)
+                   OR EXISTS(SELECT 1 FROM rs_instrument_aliases a
+                             WHERE a.instrument_id=i.instrument_id AND a.source_id=?))""",
+                (source_id, source_id),
             ).fetchone()[0]
             run = connection.execute(
                 """INSERT INTO rs_discovery_runs(source_id,started_at_utc,status,source_timestamp,source_sha256,
@@ -141,23 +149,30 @@ class InstrumentDiscovery:
                 (source_id, stamp, "running", stamp, digest, len(snapshot), before, parse_errors),
             )
             run_id = run.lastrowid
-            raw_existing_rows = connection.execute(
-                """SELECT i.*,a.alias_symbol FROM rs_instruments i JOIN rs_instrument_aliases a
-                   ON a.instrument_id=i.instrument_id WHERE a.source_id=? AND a.alias_kind='source_symbol'""",
-                (source_id,),
+            existing_rows = connection.execute(
+                """SELECT i.*,
+                   CASE WHEN EXISTS(SELECT 1 FROM rs_instrument_reference_sources r
+                                    WHERE r.instrument_id=i.instrument_id AND r.source_id=:source)
+                          OR EXISTS(SELECT 1 FROM rs_instrument_aliases a
+                                    WHERE a.instrument_id=i.instrument_id AND a.source_id=:source)
+                        THEN 1 ELSE 0 END AS source_owned
+                   FROM rs_instruments i WHERE i.is_active=1 ORDER BY i.instrument_id""",
+                {"source": source_id},
             ).fetchall()
-            existing_rows = list({int(row["instrument_id"]): row for row in raw_existing_rows}.values())
-            existing = {(row["canonical_symbol"], row["primary_venue"], row["asset_class"]): row for row in existing_rows}
+            existing = {
+                (row["canonical_symbol"], normalize_listing_venue(row["primary_venue"])[0], row["asset_class"]): row
+                for row in existing_rows
+            }
             added = changed = removed = 0
             seen_ids: set[int] = set()
             for key, item in key_map.items():
-                row = existing.get(key)
+                normalized_key = (item.canonical_symbol, normalize_listing_venue(item.primary_venue)[0], item.asset_class.value)
+                row = existing.get(normalized_key)
                 if row is None:
                     same_symbol = [
                         candidate
                         for candidate in existing_rows
                         if candidate["canonical_symbol"] == item.canonical_symbol
-                        and candidate["asset_class"] == item.asset_class.value
                     ]
                     stable_identity = next(
                         (
@@ -172,12 +187,12 @@ class InstrumentDiscovery:
                         or (
                             same_symbol[0]
                             if len(same_symbol) == 1
-                            and same_symbol[0]["security_name"] == item.security_name
+                            and normalize_listing_name(same_symbol[0]["security_name"]) == normalize_listing_name(item.security_name)
                             else None
                         )
                     )
                     same_name = next(
-                        (candidate for candidate in existing_rows if candidate["security_name"] == item.security_name and candidate["primary_venue"] == item.primary_venue),
+                        (candidate for candidate in existing_rows if normalize_listing_name(candidate["security_name"]) == normalize_listing_name(item.security_name) and normalize_listing_venue(candidate["primary_venue"])[0] == normalize_listing_venue(item.primary_venue)[0]),
                         None,
                     )
                     if venue_change is not None:
@@ -276,10 +291,32 @@ class InstrumentDiscovery:
                             "INSERT INTO rs_discovery_changes(discovery_run_id,instrument_id,change_type,old_name,new_name,created_at_utc) VALUES(?,?,?,?,?,?)",
                             (run_id, instrument_id, "metadata_changed", row["security_name"], item.security_name, stamp),
                         )
+                connection.execute(
+                    """INSERT INTO rs_instrument_aliases(
+                       instrument_id,alias_symbol,venue,alias_kind,source_id,created_at_utc)
+                       VALUES(?,?,?,?,?,?)
+                       ON CONFLICT(instrument_id,alias_symbol,venue,alias_kind) DO UPDATE SET
+                         source_id=COALESCE(rs_instrument_aliases.source_id,excluded.source_id)""",
+                    (instrument_id, item.provider_symbol or item.canonical_symbol,
+                     normalize_listing_venue(item.primary_venue)[0], "source_symbol", source_id, stamp),
+                )
+                connection.execute(
+                    """INSERT INTO rs_instrument_reference_sources(
+                       instrument_id,source_id,source_symbol,source_name,source_exchange,
+                       source_snapshot_sha256,source_retrieved_utc)
+                       VALUES(?,?,?,?,?,?,?)
+                       ON CONFLICT(instrument_id,source_id) DO UPDATE SET
+                         source_symbol=excluded.source_symbol,source_name=excluded.source_name,
+                         source_exchange=excluded.source_exchange,
+                         source_snapshot_sha256=excluded.source_snapshot_sha256,
+                         source_retrieved_utc=excluded.source_retrieved_utc""",
+                    (instrument_id, source_id, item.provider_symbol or item.canonical_symbol,
+                     item.security_name, normalize_listing_venue(item.primary_venue)[0], digest, stamp),
+                )
                 seen_ids.add(instrument_id)
             for row in existing_rows:
                 instrument_id = int(row["instrument_id"])
-                if instrument_id not in seen_ids and row["is_active"]:
+                if row["source_owned"] and instrument_id not in seen_ids and row["is_active"]:
                     connection.execute(
                         "UPDATE rs_instruments SET is_active=0,delisting_date=?,updated_at_utc=? WHERE instrument_id=?",
                         (current.date().isoformat(), stamp, instrument_id),
@@ -292,8 +329,9 @@ class InstrumentDiscovery:
             if failpoint:
                 failpoint()
             after = connection.execute(
-                """SELECT COUNT(DISTINCT i.instrument_id) FROM rs_instruments i JOIN rs_instrument_aliases a
-                   ON a.instrument_id=i.instrument_id WHERE a.source_id=? AND i.is_active=1""",
+                """SELECT COUNT(*) FROM rs_instruments i WHERE i.is_active=1 AND
+                   EXISTS(SELECT 1 FROM rs_instrument_reference_sources r
+                          WHERE r.instrument_id=i.instrument_id AND r.source_id=?)""",
                 (source_id,),
             ).fetchone()[0]
             connection.execute(
