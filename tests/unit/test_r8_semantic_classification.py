@@ -120,3 +120,22 @@ def test_schema_v11_is_additive_and_idempotent() -> None:
     ).fetchone() == ("operating_company", "alternate_security")
     apply_migrations(connection, CURRENT_SCHEMA_VERSION)
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_schema_v11_recovery_is_idempotent_when_columns_already_exist() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+           INSERT INTO meta VALUES('schema_version','10');
+           CREATE TABLE rs_instruments(
+             instrument_id INTEGER PRIMARY KEY,asset_class TEXT NOT NULL,is_active INTEGER NOT NULL DEFAULT 1,
+             issuer_entity_type TEXT NOT NULL DEFAULT 'unknown',
+             security_role TEXT NOT NULL DEFAULT 'unknown'
+           );
+           INSERT INTO rs_instruments(instrument_id,asset_class) VALUES(1,'closed_end_fund');"""
+    )
+    apply_migrations(connection, 10)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(rs_instruments)")}
+    assert {"issuer_entity_type", "security_role"}.issubset(columns)
+    assert connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "11"
+    assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

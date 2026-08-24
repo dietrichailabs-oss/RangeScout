@@ -49,8 +49,10 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
                     except sqlite3.OperationalError as exc:
                         # Tests and field-recovery tools can deliberately lower
                         # meta.schema_version on an otherwise newer database.
-                        # Additive v5 columns are safe to regard as already applied.
-                        if target in {5, 6, 8} and "duplicate column name" in str(exc).lower():
+                        # Additive columns in these versions are safe to regard
+                        # as already applied when recovering a database whose
+                        # schema-version marker was deliberately lowered.
+                        if target in {5, 6, 8, 11} and "duplicate column name" in str(exc).lower():
                             continue
                         raise
             connection.execute(
