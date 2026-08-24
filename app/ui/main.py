@@ -3133,6 +3133,7 @@ class RangeScoutWindow:
                 item.symbol, source=source, instrument_id=item.instrument_id, name=item.name,
                 venue=item.venue, asset_class=item.asset_class,
                 provider_symbols=tuple(sorted(item.provider_symbols.items())), subtype=item.subtype,
+                issuer_type=item.issuer_type, security_role=item.security_role,
             )
         else:
             if source not in {"instrument-search", "local-search", "global-search", "search", "market-search"}:
@@ -3418,7 +3419,8 @@ class RangeScoutWindow:
         self.research_profile_text.setText("Sector / industry • loading")
         self.research_profile_detail_text.setText("Sector / industry • loading")
         self.research_about_text.setText(f"Loading eligible Research for {symbol}. No values are fabricated.")
-        plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype,
+                             self.active_symbol.state.issuer_type, self.active_symbol.state.security_role)
         self._set_research_overview_labels(plan.route)
         if plan.route is ResearchRoute.CORPORATE:
             self.research_market_metrics_text.setText(
@@ -3494,7 +3496,7 @@ class RangeScoutWindow:
             return
         request = self.active_symbol.request(source="sec-research")
         self._research_dirty = False
-        plan = plan_research(request.asset_class, request.subtype)
+        plan = plan_research(request.asset_class, request.subtype, request.issuer_type, request.security_role)
         for index in range(self.research_tabs.count()):
             applicable = self.research_tabs.tabText(index) in plan.visible_sections
             self.research_tabs.setTabEnabled(index, applicable)
@@ -3598,7 +3600,8 @@ class RangeScoutWindow:
         profile_line = f"Sector / industry • {profile.sic_description or 'N/A'}" + (f" • SIC {profile.sic}" if profile.sic else "")
         self.research_profile_text.setText(profile_line)
         self.research_profile_detail_text.setText(profile_line)
-        plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype,
+                             self.active_symbol.state.issuer_type, self.active_symbol.state.security_role)
         self._set_research_overview_labels(plan.route)
         if plan.route is ResearchRoute.CORPORATE:
             self.research_about_text.setText(
@@ -4907,7 +4910,8 @@ class RangeScoutWindow:
             f"Day range  {day_range}\n52-week range  {year_range}\n"
             f"Volume  {volume}\nAverage volume  {average_volume}\nMarket cap  {market_cap}"
         )
-        research_plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype)
+        research_plan = plan_research(self.active_symbol.state.asset_class, self.active_symbol.state.subtype,
+                             self.active_symbol.state.issuer_type, self.active_symbol.state.security_role)
         if research_plan.route is ResearchRoute.CORPORATE:
             research_market_text = (
                 f"Day range  {day_range}\n52-week range  {year_range}\n"

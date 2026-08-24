@@ -23,9 +23,31 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 4
-_REFERENCE_TIME = "2026-08-23T00:00:00+00:00"
+_REFERENCE_VERSION = 5
+_REFERENCE_TIME = "2026-08-24T00:00:00+00:00"
 _CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
+_COMMON_SECURITY_MARKER = re.compile(
+    r"\bcommon\s+(?:stock|shares?|units?)(?:\s+of\s+beneficial\s+interest)?\b", re.I,
+)
+_PREFERRED_SECURITY_MARKER = re.compile(
+    r"(?:\bterm\s+preferred\b|\bseries\s+[a-z0-9-]+\s+(?:term\s+)?preferred\b|"
+    r"\bpreferred\s+(?:stock|shares?)\b(?=.*(?:\bseries\b|\bdue\b|\d(?:\.\d+)?%))|"
+    r"\bdepositary\s+shares?.*\bpreferred\b)",
+    re.I,
+)
+
+
+def has_common_security_marker(name: object) -> bool:
+    """Return whether the security name explicitly identifies a common/primary share."""
+
+    return bool(_COMMON_SECURITY_MARKER.search(str(name or "")))
+
+
+def has_preferred_security_marker(name: object) -> bool:
+    """Identify an actual preferred series, not an issuer strategy word such as Preferred Income."""
+
+    return bool(_PREFERRED_SECURITY_MARKER.search(str(name or "")))
+
 
 
 def normalize_search_text(value: object) -> str:
@@ -64,7 +86,7 @@ def canonical_asset_class(asset_class: object, subtype: object = "", security_ty
             return "right"
         if re.search(r"\bunits?\b", detail):
             return "unit"
-        if "preferred" in detail:
+        if has_preferred_security_marker(name):
             return "preferred"
         if "depositary share" in detail or "depositary receipt" in detail or "american depositary" in detail:
             return "adr"
@@ -89,21 +111,54 @@ def _looks_like_closed_end_fund(name: str, security_type: str = "") -> bool:
     return "COMMON SHARES OF BENEFICIAL INTEREST" in factual and any(term in f" {factual} " for term in fund_terms)
 
 
-def _security_role(asset_class: str, subtype: str, security_type: str, symbol: str, name: str) -> str:
+def classify_security_role(
+    asset_class: str, subtype: str, security_type: str, symbol: str, name: str,
+    issuer_type: str = "",
+) -> str:
+    """Classify the traded security independently from the issuer/entity classification."""
+
     asset = canonical_asset_class(asset_class, subtype, security_type, name)
     detail = f"{subtype} {security_type} {name}".lower()
+    issuer = str(issuer_type or "").strip().lower().replace(" ", "_")
     symbol_variant = bool(re.search(r"[-./]P[A-Z]?$", symbol, re.I))
-    if asset == "equity" and "common stock" in detail and not symbol_variant and not re.search(
-        r"(?:\bpreferred\b|\bwarrant\b|\bright\b|\bnote\b)", detail, re.I
-    ):
+    if has_common_security_marker(name):
         return "primary_common"
-    if asset in {"preferred", "warrant", "right", "unit", "etn"} or symbol_variant or re.search(
-        r"(?:\bpreferred\b|\bdepositary share\b|\bwarrant\b|\bright\b|\bnote\b)", detail, re.I,
+    if has_preferred_security_marker(name):
+        return "preferred_security"
+    if issuer == "closed_end_fund":
+        if asset in {"warrant", "right", "unit", "adr", "etn"} or re.search(
+            r"(?:\bwarrant\b|\bright\b|\bunit\b|\bnotes?\b|\bdepositary share\b)", detail, re.I,
+        ):
+            return "alternate_security"
+        return "primary_common"
+    if asset == "equity" and "common stock" in detail and not symbol_variant:
+        return "primary_common"
+    if asset in {"preferred", "warrant", "right", "unit", "etn", "adr"} or symbol_variant or re.search(
+        r"(?:\bdepositary share\b|\bwarrant\b|\bright\b|\bnotes?\b)", detail, re.I,
     ):
         return "alternate_security"
-    if asset in {"etf", "closed_end_fund", "mutual_fund"}:
+    if asset == "closed_end_fund":
+        return "primary_common"
+    if asset in {"etf", "mutual_fund"}:
         return "fund"
     return "other"
+
+
+def _security_role(asset_class: str, subtype: str, security_type: str, symbol: str, name: str) -> str:
+    return classify_security_role(asset_class, subtype, security_type, symbol, name)
+
+
+def default_issuer_entity_type(asset_class: object) -> str:
+    asset = str(asset_class or "unknown").strip().lower().replace(" ", "_")
+    if asset == "closed_end_fund":
+        return "closed_end_fund"
+    if asset in {"etf", "mutual_fund"}:
+        return "fund_vehicle"
+    if asset in {"index", "fx", "crypto_spot", "commodity_spot"}:
+        return "non_company_market_instrument"
+    if asset in {"equity", "stock", "common_stock", "preferred", "adr", "otc"}:
+        return "operating_company"
+    return "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +172,8 @@ class CanonicalInstrument:
     currency: str
     provider_symbols: Mapping[str, str]
     capabilities: Mapping[str, str]
+    issuer_type: str = "unknown"
+    security_role: str = "unknown"
 
     @property
     def identity(self) -> str:
@@ -260,6 +317,7 @@ class InstrumentReferenceSeeder:
                         (_REFERENCE_TIME, int(row["instrument_id"])),
                     )
             self._apply_authoritative_classifications(con)
+            self._apply_entity_defaults(con)
             self._apply_yahoo_crosswalks(con)
             con.execute(
                 "INSERT OR REPLACE INTO rs_schema_meta(key,value,updated_at_utc) VALUES('instrument_reference_version',?,?)",
@@ -288,6 +346,34 @@ class InstrumentReferenceSeeder:
                 (_REFERENCE_TIME, _REFERENCE_TIME, instrument_id),
             )
             con.execute("UPDATE rs_provider_symbols SET is_active=0 WHERE instrument_id=?", (instrument_id,))
+
+    @staticmethod
+    def _apply_entity_defaults(con: sqlite3.Connection) -> None:
+        """Populate both semantic dimensions for rows not covered by an authoritative issuer overlay."""
+
+        rows = con.execute(
+            """SELECT instrument_id,canonical_symbol,asset_class,instrument_subtype,security_type,
+                      security_name,issuer_entity_type,security_role
+               FROM rs_instruments WHERE is_active=1 ORDER BY instrument_id"""
+        ).fetchall()
+        for row in rows:
+            asset = canonical_asset_class(
+                row["asset_class"], row["instrument_subtype"], row["security_type"], row["security_name"]
+            )
+            issuer = str(row["issuer_entity_type"] or "unknown")
+            if issuer == "unknown":
+                issuer = default_issuer_entity_type(asset)
+            role = str(row["security_role"] or "unknown")
+            if role == "unknown":
+                role = classify_security_role(
+                    asset, str(row["instrument_subtype"] or ""), str(row["security_type"] or ""),
+                    str(row["canonical_symbol"]), str(row["security_name"] or ""), issuer,
+                )
+            con.execute(
+                """UPDATE rs_instruments SET issuer_entity_type=?,security_role=?,updated_at_utc=?
+                   WHERE instrument_id=?""",
+                (issuer, role, _REFERENCE_TIME, int(row["instrument_id"])),
+            )
 
     @staticmethod
     def _apply_yahoo_crosswalks(con: sqlite3.Connection) -> None:
@@ -360,7 +446,7 @@ class InstrumentReferenceSeeder:
                 )
     @staticmethod
     def _apply_authoritative_classifications(con: sqlite3.Connection) -> None:
-        """Apply frozen official classifications by CIK, never by symbol."""
+        """Apply issuer authority by CIK while retaining the traded security's own identity."""
 
         path = application_resource_root() / "resources" / _CLASSIFICATION_FILENAME
         if not path.is_file():
@@ -370,35 +456,47 @@ class InstrumentReferenceSeeder:
             cik = str(record.get("cik") or "").strip().zfill(10)
             if not cik:
                 continue
+            issuer_type = str(record.get("asset_class") or "unknown")
             rows = con.execute(
-                "SELECT instrument_id,asset_class,security_type,security_name FROM rs_instruments WHERE cik=? AND is_active=1",
+                """SELECT instrument_id,canonical_symbol,asset_class,instrument_subtype,security_type,security_name
+                   FROM rs_instruments WHERE cik=? AND is_active=1""",
                 (cik,),
             ).fetchall()
             for row in rows:
-                explicit = canonical_asset_class(
-                    row["asset_class"], row["security_type"], row["security_type"], row["security_name"]
+                role = classify_security_role(
+                    str(row["asset_class"] or "unknown"), str(row["instrument_subtype"] or ""),
+                    str(row["security_type"] or ""), str(row["canonical_symbol"]),
+                    str(row["security_name"] or ""), issuer_type,
                 )
-                if explicit in {"preferred", "warrant", "right", "unit", "adr", "etf"}:
-                    continue
+                if issuer_type == "closed_end_fund" and role == "primary_common":
+                    security_asset = "closed_end_fund"
+                    security_subtype = "closed_end_fund"
+                elif issuer_type == "closed_end_fund" and role == "preferred_security":
+                    security_asset = "preferred"
+                    security_subtype = str(row["instrument_subtype"] or row["security_type"] or "preferred_security")
+                else:
+                    security_asset = canonical_asset_class(
+                        row["asset_class"], row["instrument_subtype"], row["security_type"], row["security_name"]
+                    )
+                    security_subtype = str(row["instrument_subtype"] or row["security_type"] or security_asset)
                 instrument_id = int(row["instrument_id"])
-                asset = str(record["asset_class"])
-                subtype = str(record.get("instrument_subtype") or asset)
                 evidence = json.dumps(record.get("evidence_forms") or (), sort_keys=True)
                 con.execute(
                     """INSERT OR REPLACE INTO rs_instrument_classifications(
                        instrument_id,asset_class,instrument_subtype,source_id,authority_level,
                        evidence_type,evidence_value,source_url,verified_at_utc,is_active)
                        VALUES(?,?,?,?,?,?,?,?,?,1)""",
-                    (instrument_id, asset, subtype, str(record["source_id"]), "official",
-                     "sec_form_history", evidence, str(record["source_url"]), str(record["verified_at_utc"])),
+                    (instrument_id, issuer_type, str(record.get("instrument_subtype") or issuer_type),
+                     str(record["source_id"]), "official", "sec_form_history", evidence,
+                     str(record["source_url"]), str(record["verified_at_utc"])),
                 )
                 con.execute(
-                    """UPDATE rs_instruments SET asset_class=?,instrument_subtype=?,
-                       metadata_source=?,metadata_verified_utc=?,updated_at_utc=? WHERE instrument_id=?""",
-                    (asset, subtype, str(record["source_id"]), str(record["verified_at_utc"]),
-                     str(record["verified_at_utc"]), instrument_id),
+                    """UPDATE rs_instruments SET asset_class=?,instrument_subtype=?,issuer_entity_type=?,
+                       security_role=?,metadata_source=?,metadata_verified_utc=?,updated_at_utc=?
+                       WHERE instrument_id=?""",
+                    (security_asset, security_subtype, issuer_type, role, str(record["source_id"]),
+                     str(record["verified_at_utc"]), str(record["verified_at_utc"]), instrument_id),
                 )
-
     @staticmethod
     def _insert_alias(con: sqlite3.Connection, instrument_id: int, alias: str, venue: str, kind: str, boost: int) -> None:
         con.execute(
@@ -625,6 +723,17 @@ class InstrumentResolver:
         name = str(row["security_name"] or row["canonical_symbol"])
         subtype = str(row["instrument_subtype"] or row["security_type"] or "")
         asset = canonical_asset_class(row["asset_class"], subtype, row["security_type"], name)
+        keys = set(row.keys())
+        issuer_type = (
+            str(row["issuer_entity_type"] or "unknown")
+            if "issuer_entity_type" in keys else default_issuer_entity_type(asset)
+        )
+        security_role = (
+            str(row["security_role"] or "unknown")
+            if "security_role" in keys else classify_security_role(
+                asset, subtype, str(row["security_type"] or ""), str(row["canonical_symbol"]), name, issuer_type,
+            )
+        )
         return CanonicalInstrument(instrument_id, str(row["canonical_symbol"]).upper(),
             name, str(row["primary_venue"] or "N/A"), asset, subtype,
-            str(row["currency"] or "USD"), mappings, capabilities)
+            str(row["currency"] or "USD"), mappings, capabilities, issuer_type, security_role)

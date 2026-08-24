@@ -31,9 +31,25 @@ _CORPORATE_ASSETS = frozenset({"equity", "stock", "preferred", "adr", "otc"})
 _FUND_TYPES = frozenset({"closed_end_fund", "etf", "mutual_fund"})
 
 
-def plan_research(asset_class: str, subtype: str = "") -> ResearchPlan:
+def plan_research(
+    asset_class: str, subtype: str = "", issuer_type: str = "", security_role: str = "",
+) -> ResearchPlan:
     asset = str(asset_class or "unknown").lower()
     kind = str(subtype or "").lower().replace(" ", "_")
+    issuer = str(issuer_type or "unknown").lower().replace(" ", "_")
+    role = str(security_role or "unknown").lower().replace(" ", "_")
+    if issuer == "closed_end_fund":
+        context = (
+            "This preferred security retains its own Quote/History identity while Research uses its "
+            "closed-end-fund issuer context. Ordinary-company earnings and analyst tables do not apply."
+            if role == "preferred_security" or asset == "preferred" else
+            "Corporate analyst and operating-company tables do not apply to this closed-end fund."
+        )
+        return ResearchPlan(
+            ResearchRoute.FUND, True, False,
+            ("Overview", "Financials", "Performance", "Catalysts & News"),
+            Availability.NOT_APPLICABLE, context,
+        )
     if kind in _FUND_TYPES or asset in {"etf", "mutual_fund", "closed_end_fund"}:
         return ResearchPlan(
             ResearchRoute.FUND, True, False,
@@ -56,7 +72,7 @@ def plan_research(asset_class: str, subtype: str = "") -> ResearchPlan:
 
 
 def route_snapshot(service, request: SymbolRequest, period_mode: str) -> ResearchSnapshot:
-    plan = plan_research(request.asset_class, request.subtype)
+    plan = plan_research(request.asset_class, request.subtype, request.issuer_type, request.security_role)
     if not plan.sec_applicable:
         return unavailable_snapshot(request, plan)
     if plan.route is ResearchRoute.FUND:

@@ -30,6 +30,8 @@ class ActiveSymbolState:
     asset_class: str = "unknown"
     provider_symbols: tuple[tuple[str, str], ...] = ()
     subtype: str = ""
+    issuer_type: str = "unknown"
+    security_role: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +47,8 @@ class SymbolRequest:
     asset_class: str = "unknown"
     provider_symbols: tuple[tuple[str, str], ...] = ()
     subtype: str = ""
+    issuer_type: str = "unknown"
+    security_role: str = "unknown"
 
 class ActiveSymbolController:
     """Owns the application's symbol and validates asynchronous results."""
@@ -73,6 +77,7 @@ class ActiveSymbolController:
         self, symbol: object, *, source: str, instrument_id: int | None = None,
         name: str = "", venue: str = "", asset_class: str = "unknown",
         provider_symbols: tuple[tuple[str, str], ...] = (), subtype: str = "",
+        issuer_type: str = "unknown", security_role: str = "unknown",
     ) -> ActiveSymbolState:
         normalized = normalize_symbol(symbol)
         source_text = str(source).strip() or "unknown"
@@ -91,6 +96,8 @@ class ActiveSymbolController:
                 asset_class=str(asset_class or "unknown"),
                 provider_symbols=tuple(provider_symbols),
                 subtype=str(subtype),
+                issuer_type=str(issuer_type or "unknown"),
+                security_role=str(security_role or "unknown"),
             )
             state = self._state
             listeners = tuple(self._listeners)
@@ -112,6 +119,8 @@ class ActiveSymbolController:
                 asset_class=state.asset_class,
                 provider_symbols=state.provider_symbols,
                 subtype=state.subtype,
+                issuer_type=state.issuer_type,
+                security_role=state.security_role,
             )
 
     def accepts(self, request: SymbolRequest) -> bool:
