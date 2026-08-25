@@ -8,6 +8,7 @@ import re
 _COMMON = re.compile(r"\b(?:COMMON\s+(?:STOCK|SHARES?)|ORDINARY\s+SHARES?)\b", re.I)
 _ETN = re.compile(r"\b(?:ETN|EXCHANGE[- ]TRADED\s+NOTES?)\b", re.I)
 _ETF = re.compile(r"\b(?:ETF|EXCHANGE[- ]TRADED\s+FUNDS?)\b", re.I)
+_CEF = re.compile(r"\bCLOSED[- ]END\s+FUNDS?\b", re.I)
 _WARRANT = re.compile(r"\bWARRANTS?\b", re.I)
 _RIGHT = re.compile(r"\b(?:SUBSCRIPTION\s+)?RIGHTS?\b", re.I)
 _UNIT = re.compile(r"\bUNITS?\b", re.I)
@@ -44,6 +45,8 @@ def classify_official_security(name: object, *, provider_etp_flag: bool = False)
         return SecurityClassification("etn", "Exchange Traded Note")
     if has_explicit_etf_marker(text):
         return SecurityClassification("etf", "Exchange Traded Fund")
+    if _CEF.search(text):
+        return SecurityClassification("closed_end_fund", "Closed-End Fund")
     if _UNIT_SECURITY.search(text):
         return SecurityClassification("unit", "Unit")
     if _WARRANT.search(text):

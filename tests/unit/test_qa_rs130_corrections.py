@@ -23,7 +23,14 @@ from app.market_data.contracts import (
     ProviderTerms,
     RateLimitState,
 )
-from app.market_data.discovery import DiscoveryCoordinator, InstrumentDiscovery, OfficialNasdaqDirectorySource
+from app.market_data.discovery import (
+    DiscoveryCoordinator,
+    InstrumentDiscovery,
+    OfficialDirectorySnapshot,
+    OfficialNasdaqDirectorySource,
+    SourceCompleteness,
+    parse_nasdaq_directory,
+)
 from app.market_data.instruments import DiscoveredInstrument
 from app.market_data.providers.byo_free_tier import TwelveDataAdapter
 from app.market_data.providers.catalog import default_fabric_registry
@@ -279,10 +286,21 @@ class FixtureSource:
     def fetch(self):
         if self.fail:
             raise RuntimeError("offline")
-        source = OfficialNasdaqDirectorySource(
-            lambda url: self.nasdaq if url.endswith("nasdaqlisted.txt") else self.other
+        nasdaq_rows, nasdaq_errors = parse_nasdaq_directory(self.nasdaq, "Q")
+        other_rows, other_errors = parse_nasdaq_directory(self.other, "N")
+        validations = tuple(
+            SourceCompleteness(name, count, errors, True, True, None, True, "complete", None, "fixture")
+            for name, count, errors in (
+                ("nasdaqlisted", len(nasdaq_rows), nasdaq_errors),
+                ("otherlisted", len(other_rows), other_errors),
+            )
         )
-        return source.fetch()
+        return OfficialDirectorySnapshot(
+            tuple(nasdaq_rows + other_rows),
+            (self.nasdaq + "\n" + self.other).encode("utf-8"),
+            nasdaq_errors + other_errors,
+            validations,
+        )
 
 
 def test_production_discovery_due_manual_offline_and_search(tmp_path) -> None:
@@ -314,8 +332,10 @@ def test_official_source_rejects_malformed_partial_snapshot() -> None:
     source = OfficialNasdaqDirectorySource(
         lambda url: malformed if url.endswith("nasdaqlisted.txt") else "ACT Symbol|Security Name|Exchange|ETF\n"
     )
-    with pytest.raises(ValueError, match="parse-error threshold"):
-        source.fetch()
+    snapshot = source.fetch()
+    assert snapshot.complete is False
+    assert all(not item.complete for item in snapshot.validations)
+    assert "missing_official_footer" in (snapshot.validations[0].reason or "")
 
 
 def test_source_and_input_reconstructability_gates_fail_closed(tmp_path) -> None:
@@ -349,7 +369,12 @@ def test_discovery_shutdown_waits_cleanly_for_running_refresh(tmp_path) -> None:
         def fetch(self):
             entered.set()
             assert release.wait(3)
-            return [_item("AAA", "Alpha", "Q")], b"snapshot", 0
+            validation = SourceCompleteness(
+                "fixture", 1, 0, True, True, None, True, "complete", None, "fixture"
+            )
+            return OfficialDirectorySnapshot(
+                (_item("AAA", "Alpha", "Q"),), b"snapshot", 0, (validation,)
+            )
 
     coordinator = DiscoveryCoordinator(store.path, source=BlockingSource())
     future = coordinator.refresh_manual()

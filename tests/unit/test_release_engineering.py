@@ -30,7 +30,7 @@ def _sha256(path: Path) -> str:
 
 def test_milestone_product_identity() -> None:
     assert PRODUCT.version == "1.6.2"
-    assert PRODUCT.build_identity == "rs-v1.6.2-discovery-merge-r9"
+    assert PRODUCT.build_identity == "rs-v1.6.2-maintenance-safety-r10"
     assert PRODUCT.company == "Dietrich AI Labs"
     assert PRODUCT.publisher == "Dietrich AI Labs"
     assert "packaging" in SOURCE_ALLOWLIST

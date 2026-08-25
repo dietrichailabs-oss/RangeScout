@@ -34,6 +34,7 @@ class DiscoveredInstrument:
     cik: str | None = None
     listing_date: date | None = None
     provider_symbol: str | None = None
+    official_aliases: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "canonical_symbol", normalize_symbol(self.canonical_symbol))
@@ -41,6 +42,20 @@ class DiscoveredInstrument:
             raise ValueError("Security name is required.")
         if not self.primary_venue.strip():
             raise ValueError("Primary venue is required.")
+        normalized_aliases: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for raw_alias, raw_kind in self.official_aliases:
+            try:
+                alias = normalize_symbol(raw_alias)
+            except ValueError:
+                # A malformed source variant must not discard a valid canonical listing.
+                continue
+            kind = str(raw_kind or "official_source_symbol_variant").strip().lower()
+            key = (alias, kind)
+            if key not in seen:
+                seen.add(key)
+                normalized_aliases.append(key)
+        object.__setattr__(self, "official_aliases", tuple(normalized_aliases))
 
 
 @dataclass(frozen=True)

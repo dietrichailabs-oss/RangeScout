@@ -142,7 +142,7 @@ def test_schema_v12_repairs_only_exact_r8_clone_and_preserves_references(tmp_pat
         )
         connection.commit()
         apply_migrations(connection, 11)
-        assert CURRENT_SCHEMA_VERSION == 12
+        assert CURRENT_SCHEMA_VERSION == 13
         assert connection.execute("SELECT is_active FROM rs_instruments WHERE instrument_id=?", (clone,)).fetchone()[0] == 0
         assert connection.execute("SELECT survivor_instrument_id FROM rs_instrument_identity_merges WHERE old_instrument_id=?", (clone,)).fetchone()[0] == master
         assert connection.execute("SELECT instrument_id FROM rs_last_quotes").fetchone()[0] == master

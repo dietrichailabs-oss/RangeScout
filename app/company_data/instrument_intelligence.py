@@ -374,7 +374,7 @@ class InstrumentReferenceSeeder:
         subtype_by_asset = {
             "equity": "common_stock", "etf": "exchange_traded_fund", "etn": "exchange_traded_note",
             "preferred": "preferred_stock", "adr": "depositary_share", "warrant": "warrant",
-            "right": "right", "unit": "unit",
+            "right": "right", "unit": "unit", "closed_end_fund": "closed_end_fund",
         }
         for row in rows:
             current_asset = str(row["asset_class"] or "").lower()
@@ -421,9 +421,9 @@ class InstrumentReferenceSeeder:
                     str(row["canonical_symbol"]), str(row["security_name"] or ""), issuer,
                 )
             con.execute(
-                """UPDATE rs_instruments SET issuer_entity_type=?,security_role=?,updated_at_utc=?
+                """UPDATE rs_instruments SET asset_class=?,issuer_entity_type=?,security_role=?,updated_at_utc=?
                    WHERE instrument_id=?""",
-                (issuer, role, _REFERENCE_TIME, int(row["instrument_id"])),
+                (asset, issuer, role, _REFERENCE_TIME, int(row["instrument_id"])),
             )
 
     @staticmethod
@@ -583,6 +583,9 @@ class InstrumentResolver:
                           GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
                           MAX(COALESCE(a.ranking_boost,0)) alias_boost
                    FROM rs_instruments i LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
+                     AND LOWER(COALESCE(a.alias_kind,'')) NOT IN (
+                       'official_directory_symbol','official_source_symbol_variant','source_symbol','provider_symbol'
+                     )
                    WHERE UPPER(i.canonical_symbol)=? AND i.is_active=1
                    GROUP BY i.instrument_id ORDER BY i.search_priority DESC,i.instrument_id DESC""",
                 (upper,),
@@ -611,6 +614,9 @@ class InstrumentResolver:
                               GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
                               MAX(COALESCE(a.ranking_boost,0)) alias_boost
                        FROM rs_instruments i LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
+                     AND LOWER(COALESCE(a.alias_kind,'')) NOT IN (
+                       'official_directory_symbol','official_source_symbol_variant','source_symbol','provider_symbol'
+                     )
                        WHERE i.is_active=1 AND (
                           UPPER(i.canonical_symbol)=? OR UPPER(COALESCE(a.alias_symbol,''))=?
                           OR i.security_name LIKE ? COLLATE NOCASE OR i.canonical_symbol LIKE ? COLLATE NOCASE

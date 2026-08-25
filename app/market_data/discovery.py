@@ -11,16 +11,31 @@ import json
 from pathlib import Path
 import sqlite3
 from threading import RLock
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterable, Iterator, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.market_data.contracts import AssetClass
 from app.market_data.instruments import DiscoveredInstrument
 from app.instruments.security_classification import classify_official_security
+from app.company_data.instrument_intelligence import (
+    canonical_asset_class,
+    classify_security_role,
+    default_issuer_entity_type,
+)
+from app.market_data.provider_symbols import derive_yahoo_provider_symbol
 
 
 WEEK_SECONDS = 7 * 24 * 60 * 60
+RETRY_SECONDS = 6 * 60 * 60
+MIN_PLAUSIBLE_ROWS = 1_000
+MAX_SAFE_RELATIVE_DROP = 0.15
+MAX_SAFE_ABSOLUTE_DROP = 250
+
+_EXPECTED_HEADERS = {
+    "nasdaqlisted": ("Symbol", "Security Name", "Market Category", "Test Issue", "Financial Status", "Round Lot Size", "ETF", "NextShares"),
+    "otherlisted": ("ACT Symbol", "Security Name", "Exchange", "CQS Symbol", "ETF", "Round Lot Size", "Test Issue", "NASDAQ Symbol"),
+}
 
 _VENUE_NORMALIZATION = {
     "Q": ("NASDAQ", "XNAS"), "NASDAQ": ("NASDAQ", "XNAS"), "XNAS": ("NASDAQ", "XNAS"),
@@ -40,6 +55,129 @@ def normalize_listing_venue(value: object) -> tuple[str, str | None]:
 def normalize_listing_name(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
+
+def _subtype_for_asset(asset: str) -> str:
+    return {
+        "equity": "common_stock", "preferred": "preferred_stock", "adr": "depositary_share",
+        "warrant": "warrant", "right": "right", "unit": "unit",
+        "etf": "exchange_traded_fund", "etn": "exchange_traded_note",
+        "closed_end_fund": "closed_end_fund",
+    }.get(asset, asset)
+
+
+def _persist_official_aliases(connection, instrument_id: int, item: DiscoveredInstrument, source_id: str, stamp: str) -> None:
+    aliases = item.official_aliases or ((item.provider_symbol or item.canonical_symbol, "source_symbol"),)
+    for alias, kind in aliases:
+        connection.execute(
+            """INSERT INTO rs_instrument_aliases(
+               instrument_id,alias_symbol,venue,alias_kind,source_id,created_at_utc,
+               normalized_alias,ranking_boost,last_verified_utc)
+               VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(instrument_id,alias_symbol,venue,alias_kind) DO UPDATE SET
+                 source_id=excluded.source_id,last_verified_utc=excluded.last_verified_utc""",
+            (instrument_id, alias, normalize_listing_venue(item.primary_venue)[0], kind, source_id, stamp,
+             normalize_listing_name(alias), 0, stamp),
+        )
+
+
+def _enrich_discovered_instrument(connection, instrument_id: int, item: DiscoveredInstrument, source_id: str, stamp: str) -> None:
+    """Populate operational semantics and provider support without a restart."""
+    _persist_official_aliases(connection, instrument_id, item, source_id, stamp)
+    row = connection.execute(
+        """SELECT canonical_symbol,security_name,asset_class,security_type,instrument_subtype,
+                  issuer_entity_type,security_role,metadata_source
+           FROM rs_instruments WHERE instrument_id=?""", (instrument_id,),
+    ).fetchone()
+    asset = canonical_asset_class(row["asset_class"], row["instrument_subtype"], row["security_type"], row["security_name"])
+    subtype = str(row["instrument_subtype"] or _subtype_for_asset(asset))
+    issuer = str(row["issuer_entity_type"] or "unknown")
+    if issuer == "unknown":
+        issuer = default_issuer_entity_type(asset)
+    role = str(row["security_role"] or "unknown")
+    if role == "unknown":
+        role = classify_security_role(asset, subtype, str(row["security_type"] or ""),
+                                      str(row["canonical_symbol"]), str(row["security_name"] or ""), issuer)
+    connection.execute(
+        """UPDATE rs_instruments SET asset_class=?,instrument_subtype=?,issuer_entity_type=?,
+           security_role=?,metadata_source=COALESCE(metadata_source,?),
+           metadata_verified_utc=COALESCE(metadata_verified_utc,?),updated_at_utc=? WHERE instrument_id=?""",
+        (asset, subtype, issuer, role, f"official_directory:{source_id}", stamp, stamp, instrument_id),
+    )
+    alias_pairs = [(str(value[0]), str(value[1])) for value in connection.execute(
+        "SELECT alias_symbol,alias_kind FROM rs_instrument_aliases WHERE instrument_id=?", (instrument_id,)
+    )]
+    decision = derive_yahoo_provider_symbol(str(row["canonical_symbol"]), alias_pairs)
+    status, reason = decision.status, decision.reason
+    connection.execute(
+        """INSERT OR IGNORE INTO rs_providers(provider_id,display_name,provider_class,enablement_state,
+           requires_credentials,terms_review_state,created_at_utc,updated_at_utc)
+           VALUES('yahoo','Yahoo Finance','reference_mapping','runtime_controlled',0,'reviewed',?,?)""", (stamp, stamp),
+    )
+    if decision.supported and decision.provider_symbol:
+        conflict = connection.execute(
+            "SELECT instrument_id FROM rs_provider_symbols WHERE provider_id='yahoo' AND provider_symbol=? AND is_active=1 ORDER BY instrument_id LIMIT 1",
+            (decision.provider_symbol,),
+        ).fetchone()
+        if conflict is not None and int(conflict[0]) != instrument_id:
+            status, reason = "unsupported", "provider_symbol_collision"
+        else:
+            connection.execute(
+                """INSERT OR REPLACE INTO rs_provider_symbols(provider_id,instrument_id,provider_symbol,
+                   provider_venue,product_type,is_active,first_seen_utc,last_seen_utc,metadata_json,
+                   mapping_status,capabilities_json,verified_at_utc)
+                   VALUES('yahoo',?,?,?,?,1,?,?,?,?,?,?)""",
+                (instrument_id, decision.provider_symbol, "", asset, stamp, stamp,
+                 json.dumps({"canonical_symbol": decision.canonical_symbol,
+                             "mapping_source": decision.mapping_source,
+                             "evidence_aliases": decision.evidence_aliases,
+                             "discovery_source": source_id}, sort_keys=True),
+                 "derived_official_aliases", json.dumps(["candles", "historical", "quote"]), stamp),
+            )
+    for capability in ("quote", "historical", "candles"):
+        connection.execute(
+            """INSERT OR REPLACE INTO rs_provider_instrument_support(provider_id,instrument_id,capability,
+               support_status,reason,mapping_source,verified_at_utc) VALUES('yahoo',?,?,?,?,?,?)""",
+            (instrument_id, capability, status, reason, decision.mapping_source, stamp),
+        )
+        connection.execute(
+            """INSERT OR REPLACE INTO rs_instrument_capabilities(instrument_id,capability,applicability,reason,updated_at_utc)
+               VALUES(?,?,?,?,?)""",
+            (instrument_id, capability, "applicable" if status == "supported" else "not_applicable",
+             "" if status == "supported" else reason, stamp),
+        )
+
+@dataclass(frozen=True)
+class SourceCompleteness:
+    subsource_id: str
+    row_count: int
+    parse_errors: int
+    header_valid: bool
+    footer_valid: bool
+    previous_success_count: int | None
+    complete: bool
+    status: str
+    reason: str | None
+    source_sha256: str
+
+
+@dataclass(frozen=True)
+class OfficialDirectorySnapshot:
+    instruments: tuple[DiscoveredInstrument, ...]
+    raw_source: bytes
+    parse_errors: int
+    validations: tuple[SourceCompleteness, ...]
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.validations) and all(item.complete for item in self.validations)
+
+    def __iter__(self):
+        # Preserve the historical three-value source API used by QA tools.
+        yield list(self.instruments)
+        yield self.raw_source
+        yield self.parse_errors
+
+
 @dataclass(frozen=True)
 class DiscoveryReport:
     source: str
@@ -52,6 +190,8 @@ class DiscoveryReport:
     source_sha256: str
     source_timestamp: str
     status: str = "complete"
+    error_summary: str | None = None
+    source_validations: tuple[dict[str, object], ...] = ()
 
 
 def classify_nasdaq_row(row: dict[str, str]) -> tuple[AssetClass, str]:
@@ -82,8 +222,16 @@ def parse_nasdaq_directory(text: str, venue: str) -> tuple[list[DiscoveredInstru
         row_venue, _mic = normalize_listing_venue(row.get("Exchange") or venue)
         try:
             asset_class, security_type = classify_nasdaq_row(row)
+            aliases: list[tuple[str, str]] = []
+            for field_name in ("Symbol", "ACT Symbol", "CQS Symbol", "NASDAQ Symbol"):
+                alias = str(row.get(field_name) or "").strip()
+                if alias:
+                    aliases.append((alias, "official_directory_symbol" if field_name in {"Symbol", "ACT Symbol"} else "official_source_symbol_variant"))
             results.append(
-                DiscoveredInstrument(symbol, name, asset_class, security_type, row_venue, provider_symbol=symbol)
+                DiscoveredInstrument(
+                    symbol, name, asset_class, security_type, row_venue,
+                    provider_symbol=symbol, official_aliases=tuple(aliases),
+                )
             )
         except ValueError:
             errors += 1
@@ -116,12 +264,15 @@ class InstrumentDiscovery:
         parse_errors: int = 0,
         now: datetime | None = None,
         failpoint: Callable[[], None] | None = None,
+        source_validations: Iterable[SourceCompleteness] = (),
+        reconciliation_complete: bool = True,
     ) -> DiscoveryReport:
         current = now or datetime.now(timezone.utc)
         stamp = current.isoformat()
         digest = sha256(raw_source).hexdigest()
         snapshot = list(instruments)
-        key_map = {(item.canonical_symbol, item.primary_venue, item.asset_class.value): item for item in snapshot}
+        validations = tuple(source_validations)
+        key_map = {(item.canonical_symbol, normalize_listing_venue(item.primary_venue)[0]): item for item in snapshot}
         if len(key_map) != len(snapshot):
             raise ValueError("Discovery snapshot contains duplicate canonical identities.")
         connection = self.connection
@@ -149,6 +300,32 @@ class InstrumentDiscovery:
                 (source_id, stamp, "running", stamp, digest, len(snapshot), before, parse_errors),
             )
             run_id = run.lastrowid
+            validation_payload = tuple(asdict(item) for item in validations)
+            destructive_allowed = bool(reconciliation_complete) and all(item.complete for item in validations)
+            if not destructive_allowed:
+                status = "failed" if any(item.status == "failed" for item in validations) else "incomplete"
+                reason = ";".join(filter(None, (item.reason for item in validations))) or "snapshot_completeness_not_proven"
+                for validation in validations:
+                    connection.execute(
+                        """INSERT INTO rs_discovery_subsource_state(source_id,subsource_id,last_observed_count,last_status,last_error,updated_at_utc)
+                           VALUES(?,?,?,?,?,?) ON CONFLICT(source_id,subsource_id) DO UPDATE SET
+                           last_observed_count=excluded.last_observed_count,last_status=excluded.last_status,
+                           last_error=excluded.last_error,updated_at_utc=excluded.updated_at_utc""",
+                        (source_id, validation.subsource_id, validation.row_count, validation.status, validation.reason, stamp),
+                    )
+                connection.execute(
+                    """UPDATE rs_discovery_runs SET completed_at_utc=?,status=?,after_count=?,error_summary=?
+                       WHERE discovery_run_id=?""",
+                    (stamp, status, before, reason, run_id),
+                )
+                connection.execute(
+                    "UPDATE rs_discovery_sources SET next_due_utc=?,updated_at_utc=? WHERE source_id=?",
+                    ((current + timedelta(seconds=RETRY_SECONDS)).isoformat(), stamp, source_id),
+                )
+                connection.commit()
+                return DiscoveryReport(
+                    source_id, before, before, 0, 0, 0, parse_errors, digest, stamp, status, reason, validation_payload
+                )
             existing_rows = connection.execute(
                 """SELECT i.*,
                    CASE WHEN EXISTS(SELECT 1 FROM rs_instrument_reference_sources r
@@ -160,13 +337,13 @@ class InstrumentDiscovery:
                 {"source": source_id},
             ).fetchall()
             existing = {
-                (row["canonical_symbol"], normalize_listing_venue(row["primary_venue"])[0], row["asset_class"]): row
+                (row["canonical_symbol"], normalize_listing_venue(row["primary_venue"])[0]): row
                 for row in existing_rows
             }
             added = changed = removed = 0
             seen_ids: set[int] = set()
             for key, item in key_map.items():
-                normalized_key = (item.canonical_symbol, normalize_listing_venue(item.primary_venue)[0], item.asset_class.value)
+                normalized_key = (item.canonical_symbol, normalize_listing_venue(item.primary_venue)[0])
                 row = existing.get(normalized_key)
                 if row is None:
                     same_symbol = [
@@ -198,14 +375,12 @@ class InstrumentDiscovery:
                     if venue_change is not None:
                         instrument_id = int(venue_change["instrument_id"])
                         connection.execute(
-                            """UPDATE rs_instruments SET canonical_symbol=?,security_name=?,asset_class=?,security_type=?,
+                            """UPDATE rs_instruments SET canonical_symbol=?,security_name=?,
                                primary_venue=?,cik=COALESCE(?,cik),is_active=1,last_seen_utc=?,metadata_updated_utc=?,updated_at_utc=?
                                WHERE instrument_id=?""",
                             (
                                 item.canonical_symbol,
                                 item.security_name,
-                                item.asset_class.value,
-                                item.security_type,
                                 item.primary_venue,
                                 item.cik,
                                 stamp,
@@ -247,8 +422,8 @@ class InstrumentDiscovery:
                     elif same_name is not None:
                         instrument_id = int(same_name["instrument_id"])
                         connection.execute(
-                            "UPDATE rs_instruments SET canonical_symbol=?,asset_class=?,security_type=?,is_active=1,last_seen_utc=?,updated_at_utc=? WHERE instrument_id=?",
-                            (item.canonical_symbol, item.asset_class.value, item.security_type, stamp, stamp, instrument_id),
+                            "UPDATE rs_instruments SET canonical_symbol=?,is_active=1,last_seen_utc=?,updated_at_utc=? WHERE instrument_id=?",
+                            (item.canonical_symbol, stamp, stamp, instrument_id),
                         )
                         connection.execute(
                             "INSERT OR IGNORE INTO rs_instrument_aliases(instrument_id,alias_symbol,venue,alias_kind,source_id,created_at_utc) VALUES(?,?,?,?,?,?)",
@@ -280,10 +455,10 @@ class InstrumentDiscovery:
                         )
                 else:
                     instrument_id = int(row["instrument_id"])
-                    fields_changed = row["security_name"] != item.security_name or row["security_type"] != item.security_type or not row["is_active"]
+                    fields_changed = row["security_name"] != item.security_name or not row["is_active"]
                     connection.execute(
-                        "UPDATE rs_instruments SET security_name=?,security_type=?,is_active=1,last_seen_utc=?,metadata_updated_utc=?,updated_at_utc=? WHERE instrument_id=?",
-                        (item.security_name, item.security_type, stamp, stamp, stamp, instrument_id),
+                        "UPDATE rs_instruments SET security_name=?,is_active=1,last_seen_utc=?,metadata_updated_utc=?,updated_at_utc=? WHERE instrument_id=?",
+                        (item.security_name, stamp, stamp, stamp, instrument_id),
                     )
                     if fields_changed:
                         changed += 1
@@ -300,6 +475,7 @@ class InstrumentDiscovery:
                     (instrument_id, item.provider_symbol or item.canonical_symbol,
                      normalize_listing_venue(item.primary_venue)[0], "source_symbol", source_id, stamp),
                 )
+                _enrich_discovered_instrument(connection, instrument_id, item, source_id, stamp)
                 connection.execute(
                     """INSERT INTO rs_instrument_reference_sources(
                        instrument_id,source_id,source_symbol,source_name,source_exchange,
@@ -339,6 +515,18 @@ class InstrumentDiscovery:
                    added_count=?,removed_count=?,changed_count=? WHERE discovery_run_id=?""",
                 (stamp, after, added, removed, changed, run_id),
             )
+            for validation in validations:
+                connection.execute(
+                    """INSERT INTO rs_discovery_subsource_state(
+                       source_id,subsource_id,last_success_count,last_success_sha256,last_success_utc,
+                       last_observed_count,last_status,last_error,updated_at_utc) VALUES(?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(source_id,subsource_id) DO UPDATE SET
+                       last_success_count=excluded.last_success_count,last_success_sha256=excluded.last_success_sha256,
+                       last_success_utc=excluded.last_success_utc,last_observed_count=excluded.last_observed_count,
+                       last_status=excluded.last_status,last_error=NULL,updated_at_utc=excluded.updated_at_utc""",
+                    (source_id, validation.subsource_id, validation.row_count, validation.source_sha256, stamp,
+                     validation.row_count, "complete", None, stamp),
+                )
             connection.execute(
                 "UPDATE rs_discovery_sources SET last_success_utc=?,next_due_utc=?,updated_at_utc=? WHERE source_id=?",
                 (stamp, (current + timedelta(seconds=WEEK_SECONDS)).isoformat(), stamp, source_id),
@@ -347,7 +535,10 @@ class InstrumentDiscovery:
         except Exception:
             connection.rollback()
             raise
-        return DiscoveryReport(source_id, before, after, added, removed, changed, parse_errors, digest, stamp)
+        return DiscoveryReport(
+            source_id, before, after, added, removed, changed, parse_errors, digest, stamp,
+            "complete", None, tuple(asdict(item) for item in validations),
+        )
 
 
 class DiscoveryScheduler:
@@ -362,8 +553,55 @@ class DiscoveryScheduler:
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
 
+def _validate_official_directory(
+    subsource_id: str,
+    text: str,
+    venue: str,
+    previous_success_count: int | None,
+) -> tuple[list[DiscoveredInstrument], SourceCompleteness]:
+    raw = text.encode("utf-8")
+    digest = sha256(raw).hexdigest()
+    lines = [line.rstrip("\r") for line in text.splitlines() if line.strip()]
+    expected = _EXPECTED_HEADERS[subsource_id]
+    header_valid = bool(lines) and tuple(lines[0].split("|")) == expected
+    footer_valid = bool(lines) and any(line.startswith("File Creation Time:") for line in lines[-3:])
+    rows: list[DiscoveredInstrument] = []
+    parse_errors = 0
+    reasons: list[str] = []
+    if not header_valid:
+        reasons.append("malformed_header")
+    if not footer_valid:
+        reasons.append("missing_official_footer")
+    if header_valid and footer_valid:
+        try:
+            rows, parse_errors = parse_nasdaq_directory(text, venue)
+        except ValueError as exc:
+            reasons.append(f"parse_rejected:{exc}")
+    row_count = len(rows)
+    if row_count < MIN_PLAUSIBLE_ROWS:
+        reasons.append("implausibly_small_source")
+    if previous_success_count:
+        absolute_drop = previous_success_count - row_count
+        relative_floor = int(previous_success_count * (1.0 - MAX_SAFE_RELATIVE_DROP))
+        if absolute_drop > MAX_SAFE_ABSOLUTE_DROP and row_count < relative_floor:
+            reasons.append("implausible_drop_from_last_success")
+    complete = not reasons
+    return rows, SourceCompleteness(
+        subsource_id=subsource_id,
+        row_count=row_count,
+        parse_errors=parse_errors,
+        header_valid=header_valid,
+        footer_valid=footer_valid,
+        previous_success_count=previous_success_count,
+        complete=complete,
+        status="complete" if complete else "incomplete",
+        reason=";".join(reasons) if reasons else None,
+        source_sha256=digest,
+    )
+
+
 class OfficialNasdaqDirectorySource:
-    """Terms-approved Nasdaq Trader pipe-delimited listing directories."""
+    """Terms-approved directories with independent fail-safe completeness validation."""
 
     NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
     OTHER_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
@@ -371,22 +609,41 @@ class OfficialNasdaqDirectorySource:
     def __init__(self, fetch_text: Callable[[str], str] | None = None) -> None:
         self._fetch_text = fetch_text or self._download
 
-    def fetch(self) -> tuple[list[DiscoveredInstrument], bytes, int]:
-        nasdaq_text = self._fetch_text(self.NASDAQ_URL)
-        other_text = self._fetch_text(self.OTHER_URL)
-        nasdaq, nasdaq_errors = parse_nasdaq_directory(nasdaq_text, "Q")
-        other, other_errors = parse_nasdaq_directory(other_text, "N")
-        raw = (
-            f"SOURCE={self.NASDAQ_URL}\n{nasdaq_text}\n"
-            f"SOURCE={self.OTHER_URL}\n{other_text}\n"
-        ).encode("utf-8")
-        return nasdaq + other, raw, nasdaq_errors + other_errors
+    def fetch(self, previous_counts: Mapping[str, int] | None = None) -> OfficialDirectorySnapshot:
+        previous = dict(previous_counts or {})
+        rows: list[DiscoveredInstrument] = []
+        validations: list[SourceCompleteness] = []
+        raw_parts: list[str] = []
+        for subsource_id, url, venue in (
+            ("nasdaqlisted", self.NASDAQ_URL, "Q"),
+            ("otherlisted", self.OTHER_URL, "N"),
+        ):
+            try:
+                source_text = self._fetch_text(url)
+            except Exception as exc:
+                source_text = ""
+                validation = SourceCompleteness(
+                    subsource_id, 0, 0, False, False, previous.get(subsource_id), False,
+                    "failed", f"fetch_failed:{type(exc).__name__}", sha256(b"").hexdigest(),
+                )
+                source_rows: list[DiscoveredInstrument] = []
+            else:
+                source_rows, validation = _validate_official_directory(
+                    subsource_id, source_text, venue, previous.get(subsource_id)
+                )
+            rows.extend(source_rows)
+            validations.append(validation)
+            raw_parts.append(f"SOURCE={url}\n{source_text}\n")
+        raw = "".join(raw_parts).encode("utf-8")
+        return OfficialDirectorySnapshot(
+            tuple(rows), raw, sum(item.parse_errors for item in validations), tuple(validations)
+        )
 
     @staticmethod
     def _download(url: str) -> str:
         request = Request(
             url,
-            headers={"User-Agent": "RangeScout/1.3 (Dietrich AI Labs; official-directory discovery)"},
+            headers={"User-Agent": "RangeScout/1.6.2 (Dietrich AI Labs; official-directory discovery)"},
             method="GET",
         )
         try:
@@ -444,7 +701,26 @@ class DiscoveryCoordinator:
 
     def _refresh_operation(self) -> DiscoveryReport:
         try:
-            instruments, raw, parse_errors = self.source.fetch()
+            with self._connection() as connection:
+                previous_counts = {
+                    str(row["subsource_id"]): int(row["last_success_count"])
+                    for row in connection.execute(
+                        "SELECT subsource_id,last_success_count FROM rs_discovery_subsource_state WHERE source_id=? AND last_success_count IS NOT NULL",
+                        (self.SOURCE_ID,),
+                    )
+                }
+            if isinstance(self.source, OfficialNasdaqDirectorySource):
+                snapshot = self.source.fetch(previous_counts)
+            else:
+                snapshot = self.source.fetch()
+            if isinstance(snapshot, OfficialDirectorySnapshot):
+                instruments, raw, parse_errors = snapshot
+                validations = snapshot.validations
+                complete = snapshot.complete
+            else:
+                instruments, raw, parse_errors = snapshot
+                validations = ()
+                complete = False
             with self._connection() as connection:
                 report = InstrumentDiscovery(connection).import_snapshot(
                     self.SOURCE_ID,
@@ -453,6 +729,8 @@ class DiscoveryCoordinator:
                     instruments,
                     raw,
                     parse_errors=parse_errors,
+                    source_validations=validations,
+                    reconciliation_complete=complete,
                 )
         except Exception as exc:
             with self._lock:
@@ -472,6 +750,14 @@ class DiscoveryCoordinator:
                    ORDER BY discovery_run_id DESC LIMIT 1""",
                 (self.SOURCE_ID,),
             ).fetchone()
+            latest_run = connection.execute(
+                "SELECT * FROM rs_discovery_runs WHERE source_id=? ORDER BY discovery_run_id DESC LIMIT 1",
+                (self.SOURCE_ID,),
+            ).fetchone()
+            subsources = [dict(row) for row in connection.execute(
+                "SELECT * FROM rs_discovery_subsource_state WHERE source_id=? ORDER BY subsource_id",
+                (self.SOURCE_ID,),
+            )]
         with self._lock:
             running = self._future is not None and not self._future.done()
             last_error = self._last_error
@@ -488,6 +774,9 @@ class DiscoveryCoordinator:
             "removed_inactive": run["removed_count"] if run else 0,
             "changed": run["changed_count"] if run else 0,
             "parse_errors": run["parse_error_count"] if run else 0,
+            "last_run_status": latest_run["status"] if latest_run else None,
+            "last_run_error": latest_run["error_summary"] if latest_run else None,
+            "subsources": subsources,
         }
 
     def search(self, query: str, limit: int = 25) -> list[dict[str, object]]:
