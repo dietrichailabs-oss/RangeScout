@@ -38,6 +38,27 @@ def plan_research(
     kind = str(subtype or "").lower().replace(" ", "_")
     issuer = str(issuer_type or "unknown").lower().replace(" ", "_")
     role = str(security_role or "unknown").lower().replace(" ", "_")
+    if asset == "unit" and role == "primary_common" and issuer in {"operating_partnership", "operating_company"}:
+        return ResearchPlan(
+            ResearchRoute.CORPORATE, True, True,
+            ("Overview", "Valuation", "Earnings", "Growth", "Financials", "Financial Health",
+             "Performance", "Peers", "Analyst Outlook", "Catalysts & News"),
+            Availability.AVAILABLE,
+            "Issuer and SEC Research applies to this primary operating-partnership common unit.",
+        )
+    if asset == "unit" and issuer in {"fund_vehicle", "trust_vehicle"}:
+        return ResearchPlan(
+            ResearchRoute.FUND, True, False,
+            ("Overview", "Financials", "Performance", "Catalysts & News"),
+            Availability.NOT_APPLICABLE,
+            "Research follows the SEC-reporting trust or fund issuer context for this unit.",
+        )
+    if asset == "unit" and role != "primary_common":
+        return ResearchPlan(
+            ResearchRoute.MARKET_INSTRUMENT, False, False,
+            ("Overview", "Performance", "Catalysts & News"), Availability.NOT_APPLICABLE,
+            "This packaged or alternate unit retains market-instrument Research context.",
+        )
     if issuer == "closed_end_fund":
         context = (
             "This preferred security retains its own Quote/History identity while Research uses its "

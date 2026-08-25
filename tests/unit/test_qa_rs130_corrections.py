@@ -273,7 +273,13 @@ def test_venue_change_preserves_identity_and_ambiguous_symbol_does_not_merge(tmp
     ambiguous = discovery.import_snapshot(
         "ambiguous", "Ambiguous", "https://example.invalid", [_item("DUP", "One", "N")], b"a2"
     )
-    assert ambiguous.added == 1 and ambiguous.removed_inactive == 2
+    # One unpartitioned observation cannot prove either sibling inactive under the
+    # R11 confirmation policy. The new venue receives a distinct identity while
+    # both existing identities remain active until authoritative absence is confirmed.
+    assert ambiguous.added == 1 and ambiguous.removed_inactive == 0
+    assert store._con.execute(
+        "SELECT COUNT(*) FROM rs_instruments WHERE canonical_symbol='DUP' AND is_active=1"
+    ).fetchone()[0] == 3
     store.close()
 
 

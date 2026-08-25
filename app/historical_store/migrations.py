@@ -16,9 +16,10 @@ from app.historical_store.schema_v10 import MIGRATION_10_SQL
 from app.historical_store.schema_v11 import MIGRATION_11_SQL
 from app.historical_store.schema_v12 import MIGRATION_12_SQL, repair_r8_discovery_duplicates
 from app.historical_store.schema_v13 import MIGRATION_13_SQL
+from app.historical_store.schema_v14 import MIGRATION_14_SQL
 
 
-CURRENT_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = 14
 
 
 def current_schema_version() -> int:
@@ -41,6 +42,7 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
         11: MIGRATION_11_SQL,
         12: MIGRATION_12_SQL,
         13: MIGRATION_13_SQL,
+        14: MIGRATION_14_SQL,
     }
     for target in range(existing_version + 1, CURRENT_SCHEMA_VERSION + 1):
         connection.execute("BEGIN IMMEDIATE")
@@ -56,7 +58,7 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
                         # Additive columns in these versions are safe to regard
                         # as already applied when recovering a database whose
                         # schema-version marker was deliberately lowered.
-                        if target in {5, 6, 8, 11} and "duplicate column name" in str(exc).lower():
+                        if target in {5, 6, 8, 11, 14} and "duplicate column name" in str(exc).lower():
                             continue
                         raise
             if target == 12:

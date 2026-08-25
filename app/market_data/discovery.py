@@ -31,6 +31,8 @@ RETRY_SECONDS = 6 * 60 * 60
 MIN_PLAUSIBLE_ROWS = 1_000
 MAX_SAFE_RELATIVE_DROP = 0.15
 MAX_SAFE_ABSOLUTE_DROP = 250
+MAX_SINGLE_SNAPSHOT_PENDING = 25
+MISSING_CONFIRMATIONS_REQUIRED = 2
 
 _EXPECTED_HEADERS = {
     "nasdaqlisted": ("Symbol", "Security Name", "Market Category", "Test Issue", "Financial Status", "Round Lot Size", "ETF", "NextShares"),
@@ -92,7 +94,7 @@ def _enrich_discovered_instrument(connection, instrument_id: int, item: Discover
     subtype = str(row["instrument_subtype"] or _subtype_for_asset(asset))
     issuer = str(row["issuer_entity_type"] or "unknown")
     if issuer == "unknown":
-        issuer = default_issuer_entity_type(asset)
+        issuer = default_issuer_entity_type(asset, row["security_name"])
     role = str(row["security_role"] or "unknown")
     if role == "unknown":
         role = classify_security_role(asset, subtype, str(row["security_type"] or ""),
@@ -200,7 +202,7 @@ def classify_nasdaq_row(row: dict[str, str]) -> tuple[AssetClass, str]:
     return AssetClass(decision.asset_class), decision.security_type
 
 
-def parse_nasdaq_directory(text: str, venue: str) -> tuple[list[DiscoveredInstrument], int]:
+def parse_nasdaq_directory(text: str, venue: str, subsource_id: str | None = None) -> tuple[list[DiscoveredInstrument], int]:
     lines = [line.rstrip("\r") for line in text.splitlines() if line.strip()]
     if not lines:
         raise ValueError("Discovery source is empty.")
@@ -230,7 +232,7 @@ def parse_nasdaq_directory(text: str, venue: str) -> tuple[list[DiscoveredInstru
             results.append(
                 DiscoveredInstrument(
                     symbol, name, asset_class, security_type, row_venue,
-                    provider_symbol=symbol, official_aliases=tuple(aliases),
+                    provider_symbol=symbol, official_aliases=tuple(aliases), source_partition=subsource_id,
                 )
             )
         except ValueError:
@@ -326,6 +328,67 @@ class InstrumentDiscovery:
                 return DiscoveryReport(
                     source_id, before, before, 0, 0, 0, parse_errors, digest, stamp, status, reason, validation_payload
                 )
+            partition_items: dict[str, set[str]] = {}
+            for item in snapshot:
+                if item.source_partition:
+                    partition_items.setdefault(item.source_partition, set()).add(item.canonical_symbol)
+            partition_hashes = {
+                partition: sha256("\n".join(sorted(symbols)).encode("utf-8")).hexdigest()
+                for partition, symbols in partition_items.items()
+            }
+            validation_hashes = {item.subsource_id: item.source_sha256 for item in validations}
+            continuity_anomalies: list[str] = []
+            for partition, current_symbols in partition_items.items():
+                prior_rows = connection.execute(
+                    """SELECT m.instrument_id,i.canonical_symbol FROM rs_discovery_subsource_members m
+                       JOIN rs_instruments i ON i.instrument_id=m.instrument_id
+                       WHERE m.source_id=? AND m.subsource_id=? AND m.state IN ('present','pending')""",
+                    (source_id, partition),
+                ).fetchall()
+                if not prior_rows:
+                    prior_rows = connection.execute(
+                        """SELECT DISTINCT i.instrument_id,i.canonical_symbol
+                           FROM rs_instruments i
+                           JOIN rs_instrument_reference_sources r ON r.instrument_id=i.instrument_id
+                           WHERE r.source_id=? AND i.is_active=1 AND
+                           ((?='nasdaqlisted' AND UPPER(COALESCE(i.primary_venue,''))='NASDAQ') OR
+                            (?='otherlisted' AND UPPER(COALESCE(i.primary_venue,''))<>'NASDAQ'))""",
+                        (source_id, partition, partition),
+                    ).fetchall()
+                missing = [row for row in prior_rows if row["canonical_symbol"] not in current_symbols]
+                if len(missing) > MAX_SINGLE_SNAPSHOT_PENDING:
+                    continuity_anomalies.append(f"{partition}:missing={len(missing)}")
+            if continuity_anomalies:
+                reason = "continuity_anomaly:" + ";".join(continuity_anomalies)
+                for validation in validations:
+                    connection.execute(
+                        """INSERT INTO rs_discovery_subsource_state(
+                           source_id,subsource_id,last_observed_count,last_observed_symbol_set_sha256,
+                           pending_missing_count,last_status,last_error,updated_at_utc)
+                           VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source_id,subsource_id) DO UPDATE SET
+                           last_observed_count=excluded.last_observed_count,
+                           last_observed_symbol_set_sha256=excluded.last_observed_symbol_set_sha256,
+                           pending_missing_count=excluded.pending_missing_count,last_status=excluded.last_status,
+                           last_error=excluded.last_error,updated_at_utc=excluded.updated_at_utc""",
+                        (source_id, validation.subsource_id, validation.row_count,
+                         partition_hashes.get(validation.subsource_id),
+                         next((int(value.split("=")[1]) for value in continuity_anomalies
+                               if value.startswith(validation.subsource_id + ":")), 0),
+                         "incomplete", reason, stamp),
+                    )
+                connection.execute(
+                    """UPDATE rs_discovery_runs SET completed_at_utc=?,status='incomplete',after_count=?,error_summary=?
+                       WHERE discovery_run_id=?""", (stamp, before, reason, run_id),
+                )
+                connection.execute(
+                    "UPDATE rs_discovery_sources SET next_due_utc=?,updated_at_utc=? WHERE source_id=?",
+                    ((current + timedelta(seconds=RETRY_SECONDS)).isoformat(), stamp, source_id),
+                )
+                connection.commit()
+                return DiscoveryReport(
+                    source_id, before, before, 0, 0, 0, parse_errors, digest, stamp,
+                    "incomplete", reason, validation_payload,
+                )
             existing_rows = connection.execute(
                 """SELECT i.*,
                    CASE WHEN EXISTS(SELECT 1 FROM rs_instrument_reference_sources r
@@ -351,26 +414,22 @@ class InstrumentDiscovery:
                         for candidate in existing_rows
                         if candidate["canonical_symbol"] == item.canonical_symbol
                     ]
-                    stable_identity = next(
+                    verified_rename = next(
                         (
                             candidate
                             for candidate in existing_rows
-                            if item.cik and candidate["cik"] and candidate["cik"] == item.cik
+                            if candidate["canonical_symbol"] in item.verified_previous_symbols
+                            and normalize_listing_venue(candidate["primary_venue"])[0]
+                                == normalize_listing_venue(item.primary_venue)[0]
                         ),
                         None,
                     )
                     venue_change = (
-                        stable_identity
-                        or (
-                            same_symbol[0]
-                            if len(same_symbol) == 1
-                            and normalize_listing_name(same_symbol[0]["security_name"]) == normalize_listing_name(item.security_name)
-                            else None
-                        )
-                    )
-                    same_name = next(
-                        (candidate for candidate in existing_rows if normalize_listing_name(candidate["security_name"]) == normalize_listing_name(item.security_name) and normalize_listing_venue(candidate["primary_venue"])[0] == normalize_listing_venue(item.primary_venue)[0]),
-                        None,
+                        same_symbol[0]
+                        if len(same_symbol) == 1
+                        and normalize_listing_name(same_symbol[0]["security_name"])
+                            == normalize_listing_name(item.security_name)
+                        else None
                     )
                     if venue_change is not None:
                         instrument_id = int(venue_change["instrument_id"])
@@ -419,17 +478,30 @@ class InstrumentDiscovery:
                         )
                         change_type = None
                         changed += 1
-                    elif same_name is not None:
-                        instrument_id = int(same_name["instrument_id"])
+                    elif verified_rename is not None:
+                        instrument_id = int(verified_rename["instrument_id"])
+                        old_symbol = str(verified_rename["canonical_symbol"])
                         connection.execute(
-                            "UPDATE rs_instruments SET canonical_symbol=?,is_active=1,last_seen_utc=?,updated_at_utc=? WHERE instrument_id=?",
-                            (item.canonical_symbol, stamp, stamp, instrument_id),
+                            """UPDATE rs_instruments SET canonical_symbol=?,security_name=?,primary_venue=?,
+                               is_active=1,last_seen_utc=?,metadata_updated_utc=?,updated_at_utc=?
+                               WHERE instrument_id=?""",
+                            (item.canonical_symbol, item.security_name, item.primary_venue,
+                             stamp, stamp, stamp, instrument_id),
                         )
                         connection.execute(
-                            "INSERT OR IGNORE INTO rs_instrument_aliases(instrument_id,alias_symbol,venue,alias_kind,source_id,created_at_utc) VALUES(?,?,?,?,?,?)",
-                            (instrument_id, same_name["canonical_symbol"], item.primary_venue, "previous_symbol", source_id, stamp),
+                            """INSERT OR IGNORE INTO rs_instrument_aliases(
+                               instrument_id,alias_symbol,venue,alias_kind,source_id,created_at_utc)
+                               VALUES(?,?,?,?,?,?)""",
+                            (instrument_id, old_symbol, item.primary_venue, "previous_symbol", source_id, stamp),
                         )
-                        change_type = "symbol_changed"
+                        connection.execute(
+                            """INSERT OR IGNORE INTO rs_instrument_identity_evidence(
+                               source_id,instrument_id,old_symbol,new_symbol,venue,evidence_type,
+                               evidence_value,observed_at_utc) VALUES(?,?,?,?,?,?,?,?)""",
+                            (source_id, instrument_id, old_symbol, item.canonical_symbol, item.primary_venue,
+                             "authoritative_previous_symbol", old_symbol, stamp),
+                        )
+                        change_type = "symbol_changed_verified"
                         changed += 1
                     else:
                         result = connection.execute(
@@ -476,6 +548,19 @@ class InstrumentDiscovery:
                      normalize_listing_venue(item.primary_venue)[0], "source_symbol", source_id, stamp),
                 )
                 _enrich_discovered_instrument(connection, instrument_id, item, source_id, stamp)
+                if item.source_partition:
+                    connection.execute(
+                        """INSERT INTO rs_discovery_subsource_members(
+                           source_id,subsource_id,instrument_id,state,missing_observations,
+                           pending_since_utc,last_present_utc,last_missing_utc,
+                           last_missing_source_sha256,updated_at_utc)
+                           VALUES(?,?,?,'present',0,NULL,?,NULL,NULL,?)
+                           ON CONFLICT(source_id,subsource_id,instrument_id) DO UPDATE SET
+                           state='present',missing_observations=0,pending_since_utc=NULL,
+                           last_present_utc=excluded.last_present_utc,last_missing_utc=NULL,
+                           last_missing_source_sha256=NULL,updated_at_utc=excluded.updated_at_utc""",
+                        (source_id, item.source_partition, instrument_id, stamp, stamp),
+                    )
                 connection.execute(
                     """INSERT INTO rs_instrument_reference_sources(
                        instrument_id,source_id,source_symbol,source_name,source_exchange,
@@ -492,14 +577,53 @@ class InstrumentDiscovery:
                 seen_ids.add(instrument_id)
             for row in existing_rows:
                 instrument_id = int(row["instrument_id"])
-                if row["source_owned"] and instrument_id not in seen_ids and row["is_active"]:
+                if not (row["source_owned"] and instrument_id not in seen_ids and row["is_active"]):
+                    continue
+                memberships = connection.execute(
+                    """SELECT * FROM rs_discovery_subsource_members
+                       WHERE source_id=? AND instrument_id=? AND state IN ('present','pending')
+                       ORDER BY subsource_id""", (source_id, instrument_id),
+                ).fetchall()
+                if not memberships:
+                    continue
+                confirmed = False
+                for membership in memberships:
+                    partition = str(membership["subsource_id"])
+                    if partition not in partition_items:
+                        continue
+                    current_hash = validation_hashes.get(partition) or partition_hashes.get(partition) or digest
+                    prior_observations = int(membership["missing_observations"] or 0)
+                    independent = bool(
+                        membership["last_missing_source_sha256"]
+                        and membership["last_missing_source_sha256"] != current_hash
+                    )
+                    observations = prior_observations + 1 if independent or prior_observations == 0 else prior_observations
+                    if observations >= MISSING_CONFIRMATIONS_REQUIRED:
+                        connection.execute(
+                            """UPDATE rs_discovery_subsource_members SET state='confirmed_inactive',
+                               missing_observations=?,last_missing_utc=?,last_missing_source_sha256=?,updated_at_utc=?
+                               WHERE source_id=? AND subsource_id=? AND instrument_id=?""",
+                            (observations, stamp, current_hash, stamp, source_id, partition, instrument_id),
+                        )
+                        confirmed = True
+                    else:
+                        connection.execute(
+                            """UPDATE rs_discovery_subsource_members SET state='pending',missing_observations=?,
+                               pending_since_utc=COALESCE(pending_since_utc,?),last_missing_utc=?,
+                               last_missing_source_sha256=?,updated_at_utc=?
+                               WHERE source_id=? AND subsource_id=? AND instrument_id=?""",
+                            (observations, stamp, stamp, current_hash, stamp, source_id, partition, instrument_id),
+                        )
+                if confirmed:
                     connection.execute(
                         "UPDATE rs_instruments SET is_active=0,delisting_date=?,updated_at_utc=? WHERE instrument_id=?",
                         (current.date().isoformat(), stamp, instrument_id),
                     )
                     connection.execute(
-                        "INSERT INTO rs_discovery_changes(discovery_run_id,instrument_id,change_type,old_symbol,old_name,old_venue,created_at_utc) VALUES(?,?,?,?,?,?,?)",
-                        (run_id, instrument_id, "inactive", row["canonical_symbol"], row["security_name"], row["primary_venue"], stamp),
+                        """INSERT INTO rs_discovery_changes(discovery_run_id,instrument_id,change_type,
+                           old_symbol,old_name,old_venue,created_at_utc) VALUES(?,?,?,?,?,?,?)""",
+                        (run_id, instrument_id, "inactive_confirmed", row["canonical_symbol"],
+                         row["security_name"], row["primary_venue"], stamp),
                     )
                     removed += 1
             if failpoint:
@@ -516,16 +640,28 @@ class InstrumentDiscovery:
                 (stamp, after, added, removed, changed, run_id),
             )
             for validation in validations:
+                pending_count = connection.execute(
+                    """SELECT COUNT(*) FROM rs_discovery_subsource_members
+                       WHERE source_id=? AND subsource_id=? AND state='pending'""",
+                    (source_id, validation.subsource_id),
+                ).fetchone()[0]
+                symbol_set_hash = partition_hashes.get(validation.subsource_id)
                 connection.execute(
                     """INSERT INTO rs_discovery_subsource_state(
                        source_id,subsource_id,last_success_count,last_success_sha256,last_success_utc,
-                       last_observed_count,last_status,last_error,updated_at_utc) VALUES(?,?,?,?,?,?,?,?,?)
+                       last_success_symbol_set_sha256,last_observed_count,last_observed_symbol_set_sha256,
+                       pending_missing_count,last_status,last_error,updated_at_utc)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(source_id,subsource_id) DO UPDATE SET
                        last_success_count=excluded.last_success_count,last_success_sha256=excluded.last_success_sha256,
-                       last_success_utc=excluded.last_success_utc,last_observed_count=excluded.last_observed_count,
-                       last_status=excluded.last_status,last_error=NULL,updated_at_utc=excluded.updated_at_utc""",
+                       last_success_utc=excluded.last_success_utc,
+                       last_success_symbol_set_sha256=excluded.last_success_symbol_set_sha256,
+                       last_observed_count=excluded.last_observed_count,
+                       last_observed_symbol_set_sha256=excluded.last_observed_symbol_set_sha256,
+                       pending_missing_count=excluded.pending_missing_count,last_status=excluded.last_status,
+                       last_error=NULL,updated_at_utc=excluded.updated_at_utc""",
                     (source_id, validation.subsource_id, validation.row_count, validation.source_sha256, stamp,
-                     validation.row_count, "complete", None, stamp),
+                     symbol_set_hash, validation.row_count, symbol_set_hash, pending_count, "complete", None, stamp),
                 )
             connection.execute(
                 "UPDATE rs_discovery_sources SET last_success_utc=?,next_due_utc=?,updated_at_utc=? WHERE source_id=?",
@@ -574,7 +710,7 @@ def _validate_official_directory(
         reasons.append("missing_official_footer")
     if header_valid and footer_valid:
         try:
-            rows, parse_errors = parse_nasdaq_directory(text, venue)
+            rows, parse_errors = parse_nasdaq_directory(text, venue, subsource_id)
         except ValueError as exc:
             reasons.append(f"parse_rejected:{exc}")
     row_count = len(rows)

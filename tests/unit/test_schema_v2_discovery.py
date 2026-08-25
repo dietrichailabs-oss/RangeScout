@@ -73,7 +73,7 @@ def migrated_connection() -> sqlite3.Connection:
     return connection
 
 
-def test_discovery_initial_identical_add_remove_rename_and_alias_preservation() -> None:
+def test_discovery_initial_identical_add_preserves_unconfirmed_siblings_and_aliases() -> None:
     connection = migrated_connection()
     discovery = InstrumentDiscovery(connection)
     first = discovery.import_snapshot("nasdaq", "Nasdaq", "https://example.invalid", [item("AAA", "Alpha"), item("BBB", "Beta")], b"v1", now=NOW)
@@ -81,10 +81,14 @@ def test_discovery_initial_identical_add_remove_rename_and_alias_preservation() 
     second = discovery.import_snapshot("nasdaq", "Nasdaq", "https://example.invalid", [item("AAA", "Alpha"), item("BBB", "Beta")], b"v1", now=NOW + timedelta(days=1))
     assert (second.added, second.removed_inactive, second.changed) == (0, 0, 0)
     third = discovery.import_snapshot("nasdaq", "Nasdaq", "https://example.invalid", [item("AAC", "Alpha"), item("CCC", "Gamma")], b"v2", now=NOW + timedelta(days=8))
-    assert (third.added, third.removed_inactive, third.changed) == (1, 1, 1)
+    # Name equality is not security-level rename evidence, and one unpartitioned
+    # snapshot is not enough to deactivate either prior security.
+    assert (third.added, third.removed_inactive, third.changed) == (2, 0, 0)
     aliases = {row[0] for row in connection.execute("SELECT alias_symbol FROM rs_instrument_aliases")}
     assert {"AAA", "AAC", "BBB", "CCC"} <= aliases
-    assert connection.execute("SELECT is_active FROM rs_instruments WHERE canonical_symbol='BBB'").fetchone()[0] == 0
+    assert dict(connection.execute(
+        "SELECT canonical_symbol,is_active FROM rs_instruments ORDER BY canonical_symbol"
+    )) == {"AAA": 1, "AAC": 1, "BBB": 1, "CCC": 1}
 
 
 def test_discovery_transaction_rollback_and_due_schedule() -> None:

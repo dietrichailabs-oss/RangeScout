@@ -35,6 +35,8 @@ class DiscoveredInstrument:
     listing_date: date | None = None
     provider_symbol: str | None = None
     official_aliases: tuple[tuple[str, str], ...] = ()
+    source_partition: str | None = None
+    verified_previous_symbols: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "canonical_symbol", normalize_symbol(self.canonical_symbol))
@@ -56,6 +58,14 @@ class DiscoveredInstrument:
                 seen.add(key)
                 normalized_aliases.append(key)
         object.__setattr__(self, "official_aliases", tuple(normalized_aliases))
+        previous: list[str] = []
+        for raw_symbol in self.verified_previous_symbols:
+            symbol = normalize_symbol(raw_symbol)
+            if symbol != self.canonical_symbol and symbol not in previous:
+                previous.append(symbol)
+        object.__setattr__(self, "verified_previous_symbols", tuple(previous))
+        partition = str(self.source_partition or "").strip().lower()
+        object.__setattr__(self, "source_partition", partition or None)
 
 
 @dataclass(frozen=True)

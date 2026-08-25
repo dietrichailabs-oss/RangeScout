@@ -26,11 +26,21 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 5
+_REFERENCE_VERSION = 6
 _REFERENCE_TIME = "2026-08-24T00:00:00+00:00"
 _CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
 _COMMON_SECURITY_MARKER = re.compile(
     r"\bcommon\s+(?:stock|shares?|units?)(?:\s+of\s+beneficial\s+interest)?\b", re.I,
+)
+_PACKAGED_UNIT_MARKER = re.compile(
+    r"\bunits?\b.*\b(?:each|consisting|comprised)\b.*\b(?:share|stock|warrant|right)\b", re.I,
+)
+_PARTNERSHIP_UNIT_MARKER = re.compile(
+    r"(?:\bcommon units?\b|\blimited partner(?:ship)? interests?\b|"
+    r"\blimited liability company interests?\b)", re.I,
+)
+_TRUST_UNIT_MARKER = re.compile(
+    r"(?:\bunits? of beneficial interest\b|\btrust\b|\bfund units?\b)", re.I,
 )
 _PREFERRED_SECURITY_MARKER = re.compile(
     r"(?:\bterm\s+preferred\b|\bseries\s+[a-z0-9-]+\s+(?:term\s+)?preferred\b|"
@@ -135,10 +145,20 @@ def classify_security_role(
     detail = f"{subtype} {security_type} {name}".lower()
     issuer = str(issuer_type or "").strip().lower().replace(" ", "_")
     symbol_variant = bool(re.search(r"[-./]P[A-Z]?$", symbol, re.I))
-    if has_common_security_marker(name):
-        return "primary_common"
+    if asset in {"warrant", "right", "etn"}:
+        return "alternate_security"
+    if asset == "unit":
+        if _PACKAGED_UNIT_MARKER.search(name):
+            return "alternate_security"
+        if _TRUST_UNIT_MARKER.search(name):
+            return "fund"
+        if _PARTNERSHIP_UNIT_MARKER.search(name):
+            return "primary_common"
+        return "alternate_security"
     if has_preferred_security_marker(name):
         return "preferred_security"
+    if has_common_security_marker(name):
+        return "primary_common"
     if issuer == "closed_end_fund":
         if asset in {"warrant", "right", "unit", "adr", "etn"} or re.search(
             r"(?:\bwarrant\b|\bright\b|\bunit\b|\bnotes?\b|\bdepositary share\b)", detail, re.I,
@@ -162,8 +182,15 @@ def _security_role(asset_class: str, subtype: str, security_type: str, symbol: s
     return classify_security_role(asset_class, subtype, security_type, symbol, name)
 
 
-def default_issuer_entity_type(asset_class: object) -> str:
+def default_issuer_entity_type(asset_class: object, name: object = "") -> str:
     asset = str(asset_class or "unknown").strip().lower().replace(" ", "_")
+    security_name = str(name or "")
+    if asset == "unit":
+        if _TRUST_UNIT_MARKER.search(security_name):
+            return "fund_vehicle"
+        if _PARTNERSHIP_UNIT_MARKER.search(security_name) and not _PACKAGED_UNIT_MARKER.search(security_name):
+            return "operating_partnership"
+        return "unknown"
     if asset == "closed_end_fund":
         return "closed_end_fund"
     if asset in {"etf", "mutual_fund"}:
@@ -412,14 +439,14 @@ class InstrumentReferenceSeeder:
                 row["asset_class"], row["instrument_subtype"], row["security_type"], row["security_name"]
             )
             issuer = str(row["issuer_entity_type"] or "unknown")
-            if issuer == "unknown":
-                issuer = default_issuer_entity_type(asset)
-            role = str(row["security_role"] or "unknown")
-            if role == "unknown":
-                role = classify_security_role(
-                    asset, str(row["instrument_subtype"] or ""), str(row["security_type"] or ""),
-                    str(row["canonical_symbol"]), str(row["security_name"] or ""), issuer,
-                )
+            if issuer == "unknown" or asset == "unit":
+                inferred_issuer = default_issuer_entity_type(asset, row["security_name"])
+                if inferred_issuer != "unknown" or issuer == "unknown":
+                    issuer = inferred_issuer
+            role = classify_security_role(
+                asset, str(row["instrument_subtype"] or ""), str(row["security_type"] or ""),
+                str(row["canonical_symbol"]), str(row["security_name"] or ""), issuer,
+            )
             con.execute(
                 """UPDATE rs_instruments SET asset_class=?,issuer_entity_type=?,security_role=?,updated_at_utc=?
                    WHERE instrument_id=?""",
@@ -789,13 +816,12 @@ class InstrumentResolver:
         keys = set(row.keys())
         issuer_type = (
             str(row["issuer_entity_type"] or "unknown")
-            if "issuer_entity_type" in keys else default_issuer_entity_type(asset)
+            if "issuer_entity_type" in keys else default_issuer_entity_type(asset, name)
         )
-        security_role = (
-            str(row["security_role"] or "unknown")
-            if "security_role" in keys else classify_security_role(
-                asset, subtype, str(row["security_type"] or ""), str(row["canonical_symbol"]), name, issuer_type,
-            )
+        if issuer_type == "unknown" and asset == "unit":
+            issuer_type = default_issuer_entity_type(asset, name)
+        security_role = classify_security_role(
+            asset, subtype, str(row["security_type"] or ""), str(row["canonical_symbol"]), name, issuer_type,
         )
         return CanonicalInstrument(instrument_id, str(row["canonical_symbol"]).upper(),
             name, str(row["primary_venue"] or "N/A"), asset, subtype,
