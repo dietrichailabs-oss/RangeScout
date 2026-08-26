@@ -7,8 +7,11 @@ from app.research.models import Availability, ResearchValue
 
 
 def _growth(current: ResearchValue, previous: ResearchValue, label: str) -> ResearchValue:
-    if not isinstance(current.value, Decimal) or not isinstance(previous.value, Decimal) or previous.value == 0:
-        return ResearchValue.unavailable("Calculated from SEC companyfacts", f"Two compatible nonzero periods are required for {label}.")
+    if (
+        not isinstance(current.value, Decimal) or not isinstance(previous.value, Decimal) or previous.value == 0
+        or not current.units or current.units != previous.units
+    ):
+        return ResearchValue.unavailable("Calculated from SEC companyfacts", f"Two same-unit compatible nonzero periods are required for {label}.")
     return ResearchValue(
         (current.value - previous.value) / abs(previous.value) * Decimal(100),
         "Calculated from SEC companyfacts",

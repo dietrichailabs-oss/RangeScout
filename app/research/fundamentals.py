@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 import gzip
 import json
+import re
 from pathlib import Path
 from threading import Lock
 import time
@@ -52,6 +54,7 @@ class SecFactSelector:
         *,
         period: str = "latest",
         forms: frozenset[str] | None = None,
+        source: str = "SEC companyfacts",
     ) -> ResearchValue:
         concept_order = {concept: index for index, concept in enumerate(concepts)}
         unit_order = {unit: index for index, unit in enumerate(units)}
@@ -72,7 +75,7 @@ class SecFactSelector:
                     if candidate is not None and (forms is None or candidate.form in forms):
                         candidates.append(candidate)
         if not candidates:
-            return ResearchValue.unavailable("SEC companyfacts", "No eligible standard-taxonomy fact with an accepted unit.")
+            return ResearchValue.unavailable(source, "No eligible standard-taxonomy fact with an accepted unit.")
 
         def rank(item: SecFactCandidate) -> tuple[date, date, int, int, int, str]:
             amended = 1 if item.form.endswith("/A") else 0
@@ -93,7 +96,7 @@ class SecFactSelector:
         )
         return ResearchValue(
             winner.value,
-            "SEC companyfacts",
+            source,
             period=period if period != "latest" else winner.end.isoformat(),
             units=winner.unit,
             filing_date=winner.filed,
@@ -195,82 +198,219 @@ class SecCompanyFactsClient:
 
 
 class ResearchService:
-    """Build a traceable research snapshot without inventing unavailable data."""
+    """Build a traceable, taxonomy-consistent snapshot without inventing unavailable data."""
 
-    FACTS = {
-        "Revenue": (("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"), ("USD",)),
-        "Net income": (("NetIncomeLoss", "ProfitLoss"), ("USD",)),
-        "Operating income": (("OperatingIncomeLoss",), ("USD",)),
-        "Cost of revenue": (("CostOfRevenue", "CostOfGoodsAndServicesSold"), ("USD",)),
-        "Gross profit": (("GrossProfit",), ("USD",)),
-        "Assets": (("Assets",), ("USD",)),
-        "Liabilities": (("Liabilities",), ("USD",)),
-        "Equity": (("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"), ("USD",)),
-        "Cash": (("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"), ("USD",)),
-        "Debt": (("LongTermDebtAndFinanceLeaseObligationsCurrent", "LongTermDebtCurrent", "LongTermDebt"), ("USD",)),
-        "Current assets": (("AssetsCurrent",), ("USD",)),
-        "Current liabilities": (("LiabilitiesCurrent",), ("USD",)),
-        "Inventory": (("InventoryNet",), ("USD",)),
-        "Operating cash flow": (("NetCashProvidedByUsedInOperatingActivities",), ("USD",)),
-        "Capital expenditures": (("PaymentsToAcquirePropertyPlantAndEquipment",), ("USD",)),
-        "Interest expense": (("InterestExpenseNonOperating", "InterestExpense"), ("USD",)),
-        "Diluted EPS": (("EarningsPerShareDiluted",), ("USD/shares",)),
-        "Shares outstanding": (("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"), ("shares",)),
+    US_GAAP_FACTS = {
+        "Revenue": (("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"), "monetary"),
+        "Net income": (("NetIncomeLoss", "ProfitLoss"), "monetary"),
+        "Operating income": (("OperatingIncomeLoss",), "monetary"),
+        "Cost of revenue": (("CostOfRevenue", "CostOfGoodsAndServicesSold"), "monetary"),
+        "Gross profit": (("GrossProfit",), "monetary"),
+        "Assets": (("Assets",), "monetary"),
+        "Liabilities": (("Liabilities",), "monetary"),
+        "Equity": (("StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"), "monetary"),
+        "Cash": (("CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"), "monetary"),
+        "Debt": (("LongTermDebtAndFinanceLeaseObligationsCurrent", "LongTermDebtCurrent", "LongTermDebt"), "monetary"),
+        "Current assets": (("AssetsCurrent",), "monetary"),
+        "Current liabilities": (("LiabilitiesCurrent",), "monetary"),
+        "Inventory": (("InventoryNet",), "monetary"),
+        "Operating cash flow": (("NetCashProvidedByUsedInOperatingActivities",), "monetary"),
+        "Capital expenditures": (("PaymentsToAcquirePropertyPlantAndEquipment",), "monetary"),
+        "Interest expense": (("InterestExpenseNonOperating", "InterestExpense"), "monetary"),
+        "Diluted EPS": (("EarningsPerShareDiluted",), "per_share"),
+        "Shares outstanding": (("EntityCommonStockSharesOutstanding", "CommonStockSharesOutstanding"), "shares"),
+    }
+    IFRS_FACTS = {
+        "Revenue": (("Revenue",), "monetary"),
+        "Net income": (("ProfitLoss", "ProfitLossAttributableToOwnersOfParent"), "monetary"),
+        "Operating income": (("OperatingProfitLoss",), "monetary"),
+        "Cost of revenue": (("CostOfSales",), "monetary"),
+        "Gross profit": (("GrossProfit",), "monetary"),
+        "Assets": (("Assets",), "monetary"),
+        "Liabilities": (("Liabilities",), "monetary"),
+        "Equity": (("Equity", "EquityAttributableToOwnersOfParent"), "monetary"),
+        "Cash": (("CashAndCashEquivalents",), "monetary"),
+        "Debt": (("BorrowingsNoncurrent", "LongtermDebt"), "monetary"),
+        "Current assets": (("CurrentAssets",), "monetary"),
+        "Current liabilities": (("CurrentLiabilities",), "monetary"),
+        "Inventory": (("Inventories",), "monetary"),
+        "Operating cash flow": (("CashFlowsFromUsedInOperatingActivities",), "monetary"),
+        "Capital expenditures": (("PurchaseOfPropertyPlantAndEquipment", "PaymentsToAcquirePropertyPlantAndEquipment"), "monetary"),
+        "Interest expense": (("FinanceCosts",), "monetary"),
+        "Diluted EPS": (("DilutedEarningsLossPerShare", "DilutedEarningsPerShare"), "per_share"),
+        "Shares outstanding": (("NumberOfSharesOutstanding",), "shares"),
+    }
+    TAXONOMIES = {"us-gaap": US_GAAP_FACTS, "ifrs-full": IFRS_FACTS}
+    FACTS = US_GAAP_FACTS
+    ANNUAL_FORMS = frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
+    QUARTERLY_FORMS = frozenset({"10-Q", "10-Q/A"})
+    NATIVE_FORMS = {
+        "us-gaap": frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A"}),
+        "ifrs-full": frozenset({"20-F", "20-F/A", "40-F", "40-F/A"}),
     }
 
     def __init__(self, client: SecCompanyFactsClient) -> None:
         self.client = client
         self.selector = SecFactSelector()
 
-    def load(self, symbol: str, generation: int = 0, period_mode: str = "annual") -> ResearchSnapshot:
+    def load(
+        self, symbol: str, generation: int = 0, period_mode: str = "annual", *, cik: str | None = None,
+    ) -> ResearchSnapshot:
         normalized = symbol.strip().upper()
-        company = self.client.company_map().get(normalized)
+        company_map = self.client.company_map()
+        company = company_map.get(normalized)
+        if company is None and cik:
+            company = {"cik": str(cik).zfill(10), "name": normalized}
+        if company is None:
+            for candidate in self._issuer_symbol_candidates(normalized):
+                company = company_map.get(candidate)
+                if company is not None:
+                    break
         now = datetime.now(timezone.utc)
         if company is None:
             profile = CompanyProfile(normalized, None, None, None, None, None)
             return ResearchSnapshot(normalized, generation, profile, {"Overview": {}}, now, ("No official SEC ticker-to-CIK match was found.",))
-        cik = company["cik"]
-        facts_payload = self.client.companyfacts(cik)
-        submissions = self.client.submissions(cik)
-        us_gaap = facts_payload.get("facts", {}).get("us-gaap", {})
+        cik_value = str(cik or company["cik"]).zfill(10)
+        facts_payload = self.client.companyfacts(cik_value)
+        submissions = self.client.submissions(cik_value)
+        facts_root = facts_payload.get("facts", {})
+        if not isinstance(facts_root, dict):
+            facts_root = {}
+        forms = self.QUARTERLY_FORMS if period_mode == "quarterly" else self.ANNUAL_FORMS
+        taxonomy = self._choose_taxonomy(facts_root, forms, period_mode)
+        mapping = self.TAXONOMIES[taxonomy]
+        taxonomy_facts = facts_root.get(taxonomy, {})
+        if not isinstance(taxonomy_facts, dict):
+            taxonomy_facts = {}
+        currency = self._reporting_currency(taxonomy_facts, mapping, forms)
+        source = "SEC companyfacts" if taxonomy == "us-gaap" else "SEC companyfacts (ifrs-full)"
         profile = CompanyProfile(
             normalized,
-            cik,
+            cik_value,
             str(facts_payload.get("entityName") or company.get("name") or "") or None,
             _first_string(submissions.get("exchanges")),
             str(submissions.get("sic") or "") or None,
             str(submissions.get("sicDescription") or "") or None,
         )
-        forms = frozenset({"10-Q", "10-Q/A"}) if period_mode == "quarterly" else frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
-        selected = {name: self.selector.select(us_gaap, concepts, units, forms=forms) for name, (concepts, units) in self.FACTS.items()}
-        selected["Revenue previous"] = self._previous(us_gaap, "Revenue", selected["Revenue"], forms)
-        selected["Net income previous"] = self._previous(us_gaap, "Net income", selected["Net income"], forms)
-        sections = _build_sections(selected)
-        return ResearchSnapshot(normalized, generation, profile, sections, now)
+        selected: dict[str, ResearchValue] = {}
+        for name, (concepts, unit_kind) in mapping.items():
+            units = self._units_for(unit_kind, currency)
+            selected[name] = self.selector.select(
+                taxonomy_facts, concepts, units, forms=forms, source=source,
+            )
+        selected["Revenue previous"] = self._previous(
+            taxonomy_facts, mapping, "Revenue", selected["Revenue"], forms, source,
+        )
+        selected["Net income previous"] = self._previous(
+            taxonomy_facts, mapping, "Net income", selected["Net income"], forms, source,
+        )
+        warnings = (f"SEC taxonomy: {taxonomy}; reporting currency: {currency or 'not available'}; no currency conversion performed.",)
+        return ResearchSnapshot(normalized, generation, profile, _build_sections(selected), now, warnings)
 
-    def _previous(self, facts: dict[str, Any], fact_name: str, latest: ResearchValue, forms: frozenset[str]) -> ResearchValue:
-        if latest.availability is not Availability.AVAILABLE or not latest.period:
-            return ResearchValue.unavailable("SEC companyfacts", "A latest comparable period was not selected.")
+    @staticmethod
+    def _issuer_symbol_candidates(symbol: str) -> tuple[str, ...]:
+        candidates = []
+        for pattern in (r"\$[A-Z0-9]+$", r"[.-]P[A-Z0-9]*$", r"\.[A-Z]$"):
+            candidate = re.sub(pattern, "", symbol)
+            if candidate and candidate != symbol and candidate not in candidates:
+                candidates.append(candidate)
+        return tuple(candidates)
+
+    def _choose_taxonomy(self, facts_root: dict[str, Any], forms: frozenset[str], period_mode: str) -> str:
+        scored: list[tuple[tuple[int, int, str, int, int], str]] = []
+        for taxonomy, mapping in self.TAXONOMIES.items():
+            facts = facts_root.get(taxonomy, {})
+            if not isinstance(facts, dict):
+                facts = {}
+            native_rows = 0
+            total_rows = 0
+            covered: set[str] = set()
+            latest = ""
+            for metric, (concepts, _kind) in mapping.items():
+                for concept in concepts:
+                    node = facts.get(concept)
+                    units = node.get("units", {}) if isinstance(node, dict) else {}
+                    if not isinstance(units, dict):
+                        continue
+                    for rows in units.values():
+                        if not isinstance(rows, list):
+                            continue
+                        for row in rows:
+                            if not isinstance(row, dict) or str(row.get("form")) not in forms:
+                                continue
+                            total_rows += 1
+                            covered.add(metric)
+                            latest = max(latest, str(row.get("filed") or ""))
+                            if str(row.get("form")) in self.NATIVE_FORMS[taxonomy]:
+                                native_rows += 1
+            preference = 1 if taxonomy == "us-gaap" else 0
+            scored.append(((native_rows, len(covered), latest, total_rows, preference), taxonomy))
+        winner = max(scored)[1]
+        if period_mode == "quarterly" and not facts_root.get(winner) and isinstance(facts_root.get("ifrs-full"), dict):
+            return "ifrs-full"
+        return winner
+
+    @staticmethod
+    def _reporting_currency(
+        facts: dict[str, Any], mapping: dict[str, tuple[tuple[str, ...], str]], forms: frozenset[str],
+    ) -> str | None:
+        counts: Counter[str] = Counter()
+        latest: dict[str, str] = {}
+        for concepts, kind in mapping.values():
+            if kind != "monetary":
+                continue
+            for concept in concepts:
+                node = facts.get(concept)
+                units = node.get("units", {}) if isinstance(node, dict) else {}
+                if not isinstance(units, dict):
+                    continue
+                for unit, rows in units.items():
+                    normalized = str(unit).upper()
+                    if not re.fullmatch(r"[A-Z]{3}", normalized) or not isinstance(rows, list):
+                        continue
+                    eligible = [row for row in rows if isinstance(row, dict) and str(row.get("form")) in forms]
+                    counts[normalized] += len(eligible)
+                    for row in eligible:
+                        latest[normalized] = max(latest.get(normalized, ""), str(row.get("filed") or ""))
+        return max(counts, key=lambda unit: (counts[unit], latest.get(unit, ""), unit)) if counts else None
+
+    @staticmethod
+    def _units_for(kind: str, currency: str | None) -> tuple[str, ...]:
+        if kind == "shares":
+            return ("shares",)
+        if kind == "per_share":
+            return (f"{currency}/shares",) if currency else ()
+        return (currency,) if currency else ()
+
+    def _previous(
+        self,
+        facts: dict[str, Any],
+        mapping: dict[str, tuple[tuple[str, ...], str]],
+        fact_name: str,
+        latest: ResearchValue,
+        forms: frozenset[str],
+        source: str,
+    ) -> ResearchValue:
+        if latest.availability is not Availability.AVAILABLE or not latest.period or not latest.units:
+            return ResearchValue.unavailable(source, "A latest comparable period with a stable unit was not selected.")
         try:
             latest_end = date.fromisoformat(latest.period)
         except ValueError:
-            return ResearchValue.unavailable("SEC companyfacts", "The selected filing period could not be compared.")
-        concepts, units = self.FACTS[fact_name]
+            return ResearchValue.unavailable(source, "The selected filing period could not be compared.")
+        concepts, _kind = mapping[fact_name]
         filtered: dict[str, Any] = {}
         for concept in concepts:
             node = facts.get(concept)
             if not isinstance(node, dict):
                 continue
-            selected_units: dict[str, list[object]] = {}
-            for unit in units:
-                rows = node.get("units", {}).get(unit, []) if isinstance(node.get("units"), dict) else []
-                selected_units[unit] = [
-                    row for row in rows
-                    if isinstance(row, dict) and isinstance(row.get("end"), str) and row["end"] < latest_end.isoformat()
-                ]
-            filtered[concept] = {"units": selected_units}
-        return self.selector.select(filtered, concepts, units, period="previous comparable filing period", forms=forms)
-
+            rows = node.get("units", {}).get(latest.units, []) if isinstance(node.get("units"), dict) else []
+            filtered[concept] = {"units": {latest.units: [
+                row for row in rows
+                if isinstance(row, dict) and isinstance(row.get("end"), str) and row["end"] < latest_end.isoformat()
+            ]}}
+        return self.selector.select(
+            filtered, concepts, (latest.units,), period="previous comparable filing period", forms=forms, source=source,
+        )
 
 def _first_string(value: object) -> str | None:
     if isinstance(value, list):

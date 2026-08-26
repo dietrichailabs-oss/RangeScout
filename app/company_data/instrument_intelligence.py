@@ -26,8 +26,8 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 7
-_REFERENCE_TIME = "2026-08-24T00:00:00+00:00"
+_REFERENCE_VERSION = 8
+_REFERENCE_TIME = "2026-08-26T00:00:00+00:00"
 _CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
 _COMMON_SECURITY_MARKER = re.compile(
     r"\bcommon\s+(?:stock|shares?|units?)(?:\s+of\s+beneficial\s+interest)?\b", re.I,
@@ -37,7 +37,14 @@ _PACKAGED_UNIT_MARKER = re.compile(
 )
 _PARTNERSHIP_UNIT_MARKER = re.compile(
     r"(?:\bcommon units?\b|\blimited partner(?:ship)? interests?\b|"
+    r"\blimited partnership units?\b|\boperating partnership units?\b|"
     r"\blimited liability company interests?\b)", re.I,
+)
+_LEGAL_PARTNERSHIP_MARKER = re.compile(
+    r"(?:\blimited partnership\b|(?:^|[\s,])L\s*\.?\s*P\s*\.?(?=$|[\s,\-]))", re.I,
+)
+_LEGAL_LLC_MARKER = re.compile(
+    r"(?:\blimited liability company\b|(?:^|[\s,])L\s*\.?\s*L\s*\.?\s*C\s*\.?(?=$|[\s,\-]))", re.I,
 )
 _TRUST_UNIT_MARKER = re.compile(
     r"(?:\bunits? of beneficial interest\b|\btrust\b|\bfund units?\b)", re.I,
@@ -45,7 +52,8 @@ _TRUST_UNIT_MARKER = re.compile(
 _PREFERRED_SECURITY_MARKER = re.compile(
     r"(?:\bterm\s+preferred\b|\bseries\s+[a-z0-9-]+\s+(?:term\s+)?preferred\b|"
     r"\bpreferred\s+(?:stock|shares?)\b(?=.*(?:\bseries\b|\bdue\b|\d(?:\.\d+)?%))|"
-    r"\bpreferred\s+units?\b|"
+    r"\bpreferred(?:\s+(?:limited\s+partnership|class\s+[a-z0-9-]+))*\s+units?\b|"
+    r"\bpreference\s+units?\b|"
     r"\bdepositary\s+shares?.*\bpreferred\b)",
     re.I,
 )
@@ -62,6 +70,37 @@ def has_preferred_security_marker(name: object) -> bool:
 
     return bool(_PREFERRED_SECURITY_MARKER.search(str(name or "")))
 
+
+
+def classify_unit_semantics(name: object, issuer_type: object = "") -> tuple[str, str, str]:
+    """Return issuer, traded-security role, and auditable evidence for an exchange unit."""
+
+    security_name = str(name or "").strip()
+    issuer = str(issuer_type or "unknown").strip().lower().replace(" ", "_") or "unknown"
+    if _PACKAGED_UNIT_MARKER.search(security_name):
+        return "unknown", "alternate_security", "packaged unit wording identifies a share/warrant/right bundle"
+    if _TRUST_UNIT_MARKER.search(security_name):
+        return "fund_vehicle", "fund", "trust/fund wording identifies a fund vehicle"
+    partnership_evidence = bool(
+        _PARTNERSHIP_UNIT_MARKER.search(security_name)
+        or _LEGAL_PARTNERSHIP_MARKER.search(security_name)
+    )
+    llc_evidence = bool(_LEGAL_LLC_MARKER.search(security_name))
+    if issuer == "unknown":
+        if partnership_evidence:
+            issuer = "operating_partnership"
+        elif llc_evidence:
+            issuer = "operating_company"
+    preferred = has_preferred_security_marker(security_name)
+    if preferred and issuer in {"operating_partnership", "operating_company"}:
+        return issuer, "preferred_security", "legal issuer wording plus preferred/preference unit series wording"
+    if preferred:
+        return issuer, "preferred_security", "preferred/preference unit series wording; issuer context unavailable"
+    if issuer in {"operating_partnership", "operating_company"} and (partnership_evidence or llc_evidence):
+        return issuer, "primary_common", "legal partnership/LLC wording identifies the primary ownership unit"
+    if _PARTNERSHIP_UNIT_MARKER.search(security_name):
+        return "operating_partnership", "primary_common", "explicit common/partnership ownership-unit wording"
+    return issuer, "alternate_security", "unit lacks sufficient operating-issuer ownership evidence"
 
 
 def normalize_search_text(value: object) -> str:
@@ -149,15 +188,7 @@ def classify_security_role(
     if asset in {"warrant", "right", "etn"}:
         return "alternate_security"
     if asset == "unit":
-        if _PACKAGED_UNIT_MARKER.search(name):
-            return "alternate_security"
-        if _TRUST_UNIT_MARKER.search(name):
-            return "fund"
-        if has_preferred_security_marker(name):
-            return "preferred_security"
-        if _PARTNERSHIP_UNIT_MARKER.search(name):
-            return "primary_common"
-        return "alternate_security"
+        return classify_unit_semantics(name, issuer)[1]
     if has_preferred_security_marker(name):
         return "preferred_security"
     if has_common_security_marker(name):
@@ -189,11 +220,7 @@ def default_issuer_entity_type(asset_class: object, name: object = "") -> str:
     asset = str(asset_class or "unknown").strip().lower().replace(" ", "_")
     security_name = str(name or "")
     if asset == "unit":
-        if _TRUST_UNIT_MARKER.search(security_name):
-            return "fund_vehicle"
-        if _PARTNERSHIP_UNIT_MARKER.search(security_name) and not _PACKAGED_UNIT_MARKER.search(security_name):
-            return "operating_partnership"
-        return "unknown"
+        return classify_unit_semantics(security_name)[0]
     if asset == "closed_end_fund":
         return "closed_end_fund"
     if asset in {"etf", "mutual_fund"}:
@@ -218,6 +245,7 @@ class CanonicalInstrument:
     capabilities: Mapping[str, str]
     issuer_type: str = "unknown"
     security_role: str = "unknown"
+    cik: str = ""
 
     @property
     def identity(self) -> str:
@@ -688,14 +716,23 @@ class InstrumentResolver:
         if first.match_kind == "exact_name":
             exact_names = [item for item in results if item.match_kind == "exact_name"]
             return first if len({item.instrument.identity for item in exact_names}) == 1 else None
-        first_role = _security_role(first.instrument.asset_class, first.instrument.subtype, "", first.symbol, first.name)
+        first_role = first.instrument.security_role
         if first_role == "alternate_security":
             return None
         if second is not None:
             first_issuer = normalize_issuer_name(first.name)
             second_issuer = normalize_issuer_name(second.name)
-            second_role = _security_role(second.instrument.asset_class, second.instrument.subtype, "", second.symbol, second.name)
+            second_role = second.instrument.security_role
             if first_role == second_role == "primary_common" and first_issuer and first_issuer == second_issuer:
+                return None
+            normalized_query = normalize_search_text(query)
+            family_matches = [
+                item for item in results
+                if item.score >= first.score - 250
+                and item.match_kind in {"issuer_name", "issuer_prefix", "name_prefix", "normalized_name"}
+                and normalize_issuer_name(item.name).startswith(normalized_query)
+            ]
+            if len({item.instrument.identity for item in family_matches}) > 1:
                 return None
         if first.score >= 930 and (second is None or first.score - second.score >= 70):
             return first
@@ -770,7 +807,8 @@ class InstrumentResolver:
         security_type = str(row["security_type"] or "")
         subtype = str(row["instrument_subtype"] or "")
         canonical_asset = canonical_asset_class(str(row["asset_class"] or ""), subtype, security_type, name)
-        role = _security_role(canonical_asset, subtype, security_type, symbol, name)
+        issuer_type = str(row["issuer_entity_type"] or "unknown") if "issuer_entity_type" in row.keys() else "unknown"
+        role = classify_security_role(canonical_asset, subtype, security_type, symbol, name, issuer_type)
         priority = int(row["search_priority"] or 0) + int(row["alias_boost"] or 0)
         if upper == symbol:
             score, kind, matched = 1_000_000, "exact_symbol", symbol
@@ -828,4 +866,5 @@ class InstrumentResolver:
         )
         return CanonicalInstrument(instrument_id, str(row["canonical_symbol"]).upper(),
             name, str(row["primary_venue"] or "N/A"), asset, subtype,
-            str(row["currency"] or "USD"), mappings, capabilities, issuer_type, security_role)
+            str(row["currency"] or "USD"), mappings, capabilities, issuer_type, security_role,
+            str(row["cik"] or "") if "cik" in keys else "")

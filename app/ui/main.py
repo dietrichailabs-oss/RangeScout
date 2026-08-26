@@ -3133,7 +3133,7 @@ class RangeScoutWindow:
                 item.symbol, source=source, instrument_id=item.instrument_id, name=item.name,
                 venue=item.venue, asset_class=item.asset_class,
                 provider_symbols=tuple(sorted(item.provider_symbols.items())), subtype=item.subtype,
-                issuer_type=item.issuer_type, security_role=item.security_role,
+                issuer_type=item.issuer_type, security_role=item.security_role, cik=item.cik,
             )
         else:
             if source not in {"instrument-search", "local-search", "global-search", "search", "market-search"}:
@@ -3619,13 +3619,11 @@ class RangeScoutWindow:
             value = snapshot.sections.get(section, {}).get(metric)
             if value is None or value.value is None:
                 return "N/A"
-            units = str(value.units or "").lower()
-            semantic = "money" if units in {"usd", "eur", "gbp"} else "number"
-            return format_financial_value(
-                value.value,
-                semantic,
-                units.upper() if len(units) == 3 else "USD",
-            ).text
+            units = str(value.units or "")
+            currency = units.split("/", 1)[0].upper()
+            monetary = len(currency) == 3 and currency.isalpha()
+            semantic = "money" if monetary else "number"
+            return format_financial_value(value.value, semantic, currency if monetary else "USD").text
 
         if plan.route is ResearchRoute.CORPORATE:
             self.research_key_metrics_text.setText(
@@ -3845,17 +3843,19 @@ class RangeScoutWindow:
         row = table.rowCount()
         table.insertRow(row)
         units = str(value.units or "").lower()
+        currency = units.split("/", 1)[0].upper()
+        monetary = len(currency) == 3 and currency.isalpha()
         metric_lower = metric.lower()
         semantic = "number"
         if "percent" in units or "yield" in metric_lower or metric_lower.endswith("margin"):
             semantic = "percent"
         elif "ratio" in units or any(token in metric_lower for token in ("ratio", "multiple", "p/e", "price to")):
             semantic = "ratio"
-        elif units in {"usd", "eur", "gbp"} or any(token in metric_lower for token in ("revenue", "income", "assets", "equity", "cash", "debt", "price", "eps", "capitalization")):
+        elif monetary or any(token in metric_lower for token in ("revenue", "income", "assets", "equity", "cash", "debt", "price", "eps", "capitalization")):
             semantic = "eps" if "eps" in metric_lower else "money"
         elif any(token in metric_lower for token in ("year", "date", "accession", "cik")):
             semantic = "text"
-        rendered = format_financial_value(value.value, semantic, units.upper() if len(units) == 3 else "USD").text
+        rendered = format_financial_value(value.value, semantic, currency if monetary else "USD").text
         filed = value.filing_date.isoformat() if value.filing_date else "not supplied"
         cells = (
             metric,

@@ -32,6 +32,7 @@ class ActiveSymbolState:
     subtype: str = ""
     issuer_type: str = "unknown"
     security_role: str = "unknown"
+    cik: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class SymbolRequest:
     subtype: str = ""
     issuer_type: str = "unknown"
     security_role: str = "unknown"
+    cik: str = ""
 
 class ActiveSymbolController:
     """Owns the application's symbol and validates asynchronous results."""
@@ -77,7 +79,7 @@ class ActiveSymbolController:
         self, symbol: object, *, source: str, instrument_id: int | None = None,
         name: str = "", venue: str = "", asset_class: str = "unknown",
         provider_symbols: tuple[tuple[str, str], ...] = (), subtype: str = "",
-        issuer_type: str = "unknown", security_role: str = "unknown",
+        issuer_type: str = "unknown", security_role: str = "unknown", cik: str = "",
     ) -> ActiveSymbolState:
         normalized = normalize_symbol(symbol)
         source_text = str(source).strip() or "unknown"
@@ -98,6 +100,7 @@ class ActiveSymbolController:
                 subtype=str(subtype),
                 issuer_type=str(issuer_type or "unknown"),
                 security_role=str(security_role or "unknown"),
+                cik=str(cik or ""),
             )
             state = self._state
             listeners = tuple(self._listeners)
@@ -121,6 +124,7 @@ class ActiveSymbolController:
                 subtype=state.subtype,
                 issuer_type=state.issuer_type,
                 security_role=state.security_role,
+                cik=state.cik,
             )
 
     def accepts(self, request: SymbolRequest) -> bool:

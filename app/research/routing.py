@@ -46,7 +46,7 @@ def plan_research(
             Availability.AVAILABLE,
             "Issuer and SEC Research applies to this primary operating-partnership common unit.",
         )
-    if asset == "unit" and role == "preferred_security" and issuer == "operating_partnership":
+    if asset == "unit" and role == "preferred_security" and issuer in {"operating_partnership", "operating_company"}:
         return ResearchPlan(
             ResearchRoute.CORPORATE, True, False,
             ("Overview", "Financials", "Financial Health", "Performance", "Catalysts & News"),
@@ -113,7 +113,7 @@ def route_snapshot(service, request: SymbolRequest, period_mode: str) -> Researc
             )
             return unavailable_snapshot(request, missing)
         return FundResearchService(client).load(request.symbol, request.generation, period_mode)
-    return service.load(request.symbol, request.generation, period_mode)
+    return service.load(request.symbol, request.generation, period_mode, cik=request.cik or None)
 
 
 def unavailable_snapshot(request: SymbolRequest, plan: ResearchPlan) -> ResearchSnapshot:
