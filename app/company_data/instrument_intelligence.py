@@ -81,16 +81,16 @@ def classify_unit_semantics(name: object, issuer_type: object = "") -> tuple[str
         return "unknown", "alternate_security", "packaged unit wording identifies a share/warrant/right bundle"
     if _TRUST_UNIT_MARKER.search(security_name):
         return "fund_vehicle", "fund", "trust/fund wording identifies a fund vehicle"
-    partnership_evidence = bool(
-        _PARTNERSHIP_UNIT_MARKER.search(security_name)
-        or _LEGAL_PARTNERSHIP_MARKER.search(security_name)
-    )
     llc_evidence = bool(_LEGAL_LLC_MARKER.search(security_name))
+    partnership_evidence = bool(
+        _LEGAL_PARTNERSHIP_MARKER.search(security_name)
+        or (_PARTNERSHIP_UNIT_MARKER.search(security_name) and not llc_evidence)
+    )
     if issuer == "unknown":
-        if partnership_evidence:
-            issuer = "operating_partnership"
-        elif llc_evidence:
+        if llc_evidence:
             issuer = "operating_company"
+        elif partnership_evidence:
+            issuer = "operating_partnership"
     preferred = has_preferred_security_marker(security_name)
     if preferred and issuer in {"operating_partnership", "operating_company"}:
         return issuer, "preferred_security", "legal issuer wording plus preferred/preference unit series wording"

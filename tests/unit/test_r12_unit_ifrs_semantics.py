@@ -29,6 +29,7 @@ from app.research.routing import ResearchRoute, plan_research
     ("Energy Transfer L.P. Series I Fixed Rate Perpetual Preferred Units", "operating_partnership", "preferred_security"),
     ("GasLog Partners LP 8.625% Series A Cumulative Redeemable Perpetual Preference Units", "operating_partnership", "preferred_security"),
     ("Belpointe PREP, LLC Class A Units", "operating_company", "primary_common"),
+    ("SunocoCorp LLC Common Units, representing limited liability company interests", "operating_company", "primary_common"),
     ("Seapeak LLC 9.00% Series A Cumulative Redeemable Perpetual Preferred Units", "operating_company", "preferred_security"),
 ])
 def test_generalized_legal_unit_semantics(name: str, issuer: str, role: str) -> None:
