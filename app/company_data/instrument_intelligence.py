@@ -732,7 +732,12 @@ class InstrumentResolver:
                 and item.match_kind in {"issuer_name", "issuer_prefix", "name_prefix", "normalized_name"}
                 and normalize_issuer_name(item.name).startswith(normalized_query)
             ]
-            if len({item.instrument.identity for item in family_matches}) > 1:
+            family_roles = {item.instrument.security_role for item in family_matches}
+            if (
+                first.score < 1_100
+                and len({item.instrument.identity for item in family_matches}) > 1
+                and bool(family_roles & {"preferred_security", "alternate_security"})
+            ):
                 return None
         if first.score >= 930 and (second is None or first.score - second.score >= 70):
             return first

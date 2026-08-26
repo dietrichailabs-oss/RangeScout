@@ -67,6 +67,10 @@ def test_corrected_unit_semantics_feed_search_without_false_family_resolution(tm
     assert resolver.search("Brookfield Renewable Partners")[0].symbol == "BEP"
     assert resolver.resolve_unique("Brookfield Infrastructure") is None
     assert resolver.resolve_unique("Brookfield Renewable") is None
+    assert resolver.resolve_unique("Intel").symbol == "INTC"
+    assert resolver.resolve_unique("JPMorgan").symbol == "JPM"
+    assert resolver.resolve_unique("Coca Cola").symbol == "KO"
+    assert resolver.resolve_unique("Coca-Cola").symbol == "KO"
 
 
 def fact(value: int, *, end: str, filed: str, form: str = "20-F", fy: int = 2025) -> dict[str, object]:
