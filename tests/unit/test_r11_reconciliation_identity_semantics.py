@@ -201,6 +201,7 @@ def test_operating_partnership_units_receive_issuer_aware_sec_research(symbol: s
 @pytest.mark.parametrize("asset,name,expected_issuer,expected_role,expected_route", [
     ("unit", "Acquisition Corp Units, each consisting of one share and one-half warrant", "unknown", "alternate_security", ResearchRoute.MARKET_INSTRUMENT),
     ("unit", "Example Statutory Trust Units of Beneficial Interest", "fund_vehicle", "fund", ResearchRoute.FUND),
+    ("unit", "Example LP 9.00% Cumulative Redeemable Perpetual Preferred Units representing limited partnership interests", "operating_partnership", "preferred_security", ResearchRoute.CORPORATE),
     ("warrant", "Example Common Stock Purchase Warrants", "unknown", "alternate_security", ResearchRoute.MARKET_INSTRUMENT),
     ("right", "Example Common Stock Subscription Rights", "unknown", "alternate_security", ResearchRoute.MARKET_INSTRUMENT),
 ])

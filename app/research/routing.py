@@ -46,6 +46,13 @@ def plan_research(
             Availability.AVAILABLE,
             "Issuer and SEC Research applies to this primary operating-partnership common unit.",
         )
+    if asset == "unit" and role == "preferred_security" and issuer == "operating_partnership":
+        return ResearchPlan(
+            ResearchRoute.CORPORATE, True, False,
+            ("Overview", "Financials", "Financial Health", "Performance", "Catalysts & News"),
+            Availability.AVAILABLE,
+            "Issuer and SEC Research is shown in operating-partnership context for this preferred unit.",
+        )
     if asset == "unit" and issuer in {"fund_vehicle", "trust_vehicle"}:
         return ResearchPlan(
             ResearchRoute.FUND, True, False,

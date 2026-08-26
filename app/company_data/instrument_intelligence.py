@@ -26,7 +26,7 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 6
+_REFERENCE_VERSION = 7
 _REFERENCE_TIME = "2026-08-24T00:00:00+00:00"
 _CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
 _COMMON_SECURITY_MARKER = re.compile(
@@ -45,6 +45,7 @@ _TRUST_UNIT_MARKER = re.compile(
 _PREFERRED_SECURITY_MARKER = re.compile(
     r"(?:\bterm\s+preferred\b|\bseries\s+[a-z0-9-]+\s+(?:term\s+)?preferred\b|"
     r"\bpreferred\s+(?:stock|shares?)\b(?=.*(?:\bseries\b|\bdue\b|\d(?:\.\d+)?%))|"
+    r"\bpreferred\s+units?\b|"
     r"\bdepositary\s+shares?.*\bpreferred\b)",
     re.I,
 )
@@ -152,6 +153,8 @@ def classify_security_role(
             return "alternate_security"
         if _TRUST_UNIT_MARKER.search(name):
             return "fund"
+        if has_preferred_security_marker(name):
+            return "preferred_security"
         if _PARTNERSHIP_UNIT_MARKER.search(name):
             return "primary_common"
         return "alternate_security"
