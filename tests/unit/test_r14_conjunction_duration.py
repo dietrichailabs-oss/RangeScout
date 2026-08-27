@@ -203,6 +203,51 @@ def test_previous_quarter_rejects_ytd_and_missing_comparable_is_unavailable() ->
     assert growth.availability is Availability.NOT_AVAILABLE
 
 
+def test_taxonomy_transition_is_payload_order_independent() -> None:
+    current_ifrs = row(
+        600, start="2025-01-01", end="2025-12-31", filed="2026-04-01",
+        form="20-F", accession="ifrs-current", fy=2025, fp="FY", frame="CY2025",
+    )
+    older_gaap = row(
+        400, start="2024-01-01", end="2024-12-31", filed="2025-03-01",
+        form="10-K", accession="gaap-old", fy=2024, fp="FY", frame="CY2024",
+    )
+    nodes = {
+        "ifrs-full": {"Revenue": {"units": {"EUR": [current_ifrs]}}},
+        "us-gaap": {"RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": [older_gaap]}}},
+    }
+    payloads = [nodes, dict(reversed(tuple(nodes.items())))]
+    selected = [ResearchService(FixtureClient(payload)).load("TEST").sections["Overview"]["Revenue"] for payload in payloads]
+    assert {item.value for item in selected} == {Decimal(600)}
+    assert {item.taxonomy for item in selected} == {"ifrs-full"}
+    assert {item.units for item in selected} == {"EUR"}
+
+
+def test_reporting_currency_transition_is_unit_and_row_order_independent() -> None:
+    current = row(
+        700, start="2025-01-01", end="2025-12-31", filed="2026-04-01",
+        form="20-F", accession="twd-current", fy=2025, fp="FY", frame="CY2025",
+    )
+    prior_same_unit = row(
+        650, start="2024-01-01", end="2024-12-31", filed="2025-04-01",
+        form="20-F", accession="twd-prior", fy=2024, fp="FY", frame="CY2024",
+    )
+    older_usd = row(
+        100, start="2024-01-01", end="2024-12-31", filed="2025-03-01",
+        form="20-F", accession="usd-old", fy=2024, fp="FY", frame="CY2024",
+    )
+    units_a = {"USD": [older_usd], "TWD": [prior_same_unit, current]}
+    units_b = {"TWD": [current, prior_same_unit], "USD": [older_usd]}
+    payloads = [
+        {"ifrs-full": {"Revenue": {"units": units_a}}},
+        {"ifrs-full": {"Revenue": {"units": units_b}}},
+    ]
+    selected = [ResearchService(FixtureClient(payload)).load("TEST").sections["Overview"]["Revenue"] for payload in payloads]
+    assert {item.value for item in selected} == {Decimal(700)}
+    assert {item.taxonomy for item in selected} == {"ifrs-full"}
+    assert {item.units for item in selected} == {"TWD"}
+
+
 def test_schema_16_backfills_optional_documents_transactionally(tmp_path: Path) -> None:
     database = tmp_path / "migration.sqlite"
     with HistoricalStore(database) as store:
