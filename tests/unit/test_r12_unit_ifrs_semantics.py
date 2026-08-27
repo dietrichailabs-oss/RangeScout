@@ -73,8 +73,19 @@ def test_corrected_unit_semantics_feed_search_without_false_family_resolution(tm
     assert resolver.resolve_unique("Coca-Cola").symbol == "KO"
 
 
-def fact(value: int, *, end: str, filed: str, form: str = "20-F", fy: int = 2025) -> dict[str, object]:
-    return {"val": value, "end": end, "filed": filed, "form": form, "accn": f"{fy}-1", "fy": fy, "fp": "FY"}
+def fact(
+    value: int, *, end: str, filed: str, form: str = "20-F", fy: int = 2025,
+    start: str | None = None, frame: str | None = None,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "val": value, "end": end, "filed": filed, "form": form,
+        "accn": f"{fy}-1", "fy": fy, "fp": "FY",
+    }
+    if start:
+        result["start"] = start
+    if frame:
+        result["frame"] = frame
+    return result
 
 
 class FixtureClient:
@@ -94,15 +105,22 @@ class FixtureClient:
 
 
 def ifrs_facts(currency: str = "TWD", *, include_equity: bool = True) -> dict[str, object]:
-    current = dict(end="2025-12-31", filed="2026-04-15", form="20-F", fy=2025)
-    previous = dict(end="2024-12-31", filed="2025-04-15", form="20-F", fy=2024)
+    current = dict(
+        end="2025-12-31", filed="2026-04-15", form="20-F", fy=2025,
+        start="2025-01-01", frame="CY2025",
+    )
+    previous = dict(
+        end="2024-12-31", filed="2025-04-15", form="20-F", fy=2024,
+        start="2024-01-01", frame="CY2024",
+    )
+    current_instant = dict(end="2025-12-31", filed="2026-04-15", form="20-F", fy=2025)
     facts = {
         "Revenue": {"units": {currency: [fact(120, **current), fact(100, **previous)]}},
         "ProfitLoss": {"units": {currency: [fact(24, **current), fact(20, **previous)]}},
-        "Assets": {"units": {currency: [fact(900, **current)]}},
+        "Assets": {"units": {currency: [fact(900, **current_instant)]}},
     }
     if include_equity:
-        facts["Equity"] = {"units": {currency: [fact(500, **current)]}}
+        facts["Equity"] = {"units": {currency: [fact(500, **current_instant)]}}
     return facts
 
 
@@ -129,7 +147,10 @@ def test_foreign_partnership_unit_uses_issuer_cik_and_ifrs_cad() -> None:
 
 def test_mixed_taxonomy_selects_one_native_filing_taxonomy_without_currency_mixing() -> None:
     us = {"RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": [
-        fact(999, end="2025-12-31", filed="2026-02-01", form="10-K", fy=2025),
+        fact(
+            999, end="2025-12-31", filed="2026-02-01", form="10-K", fy=2025,
+            start="2025-01-01", frame="CY2025",
+        ),
     ]}}}
     snapshot = ResearchService(FixtureClient({"us-gaap": us, "ifrs-full": ifrs_facts("TWD")})).load("TSM")
     revenue = snapshot.sections["Overview"]["Revenue"]
@@ -147,8 +168,12 @@ def test_missing_ifrs_concept_remains_unavailable() -> None:
 
 def test_previous_period_never_crosses_reporting_currency() -> None:
     facts = ifrs_facts("TWD")
-    facts["Revenue"]["units"]["TWD"] = [fact(120, end="2025-12-31", filed="2026-04-15")]
-    facts["Revenue"]["units"]["USD"] = [fact(100, end="2024-12-31", filed="2025-04-15", fy=2024)]
+    facts["Revenue"]["units"]["TWD"] = [fact(
+        120, end="2025-12-31", filed="2026-04-15", start="2025-01-01", frame="CY2025",
+    )]
+    facts["Revenue"]["units"]["USD"] = [fact(
+        100, end="2024-12-31", filed="2025-04-15", fy=2024, start="2024-01-01", frame="CY2024",
+    )]
     snapshot = ResearchService(FixtureClient({"ifrs-full": facts})).load("TSM")
     assert snapshot.sections["Overview"]["Revenue"].units == "TWD"
     assert snapshot.sections["Growth"]["Revenue growth"].availability is Availability.NOT_AVAILABLE
