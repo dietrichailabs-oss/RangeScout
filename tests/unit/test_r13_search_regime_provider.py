@@ -56,6 +56,17 @@ def test_qa_punctuation_queries_retrieve_and_rank_expected(
     results = InstrumentResolver(r13_database).search(query, 20)
     assert results and results[0].symbol == expected
 
+@pytest.mark.parametrize(("query", "expected"), [
+    ("Anjoy Foods Group Co LtdADR", "ANJFY"),
+    ("Associated BancCorp Depositary Shares each representing a 140th interest", "ASB$E"),
+    ("Auto Trader Group plcADR", "ATDRF"),
+    ("HECLA MINING CODE", "HL-PB"),
+])
+def test_punctuation_deleted_compact_forms_reach_indexed_candidates(
+    r13_database: Path, query: str, expected: str,
+) -> None:
+    assert expected in {item.symbol for item in InstrumentResolver(r13_database).search(query, 50)}
+
 
 def test_search_candidate_retrieval_uses_fts_index(r13_database: Path) -> None:
     with sqlite3.connect(r13_database) as connection:

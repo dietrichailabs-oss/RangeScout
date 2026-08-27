@@ -29,6 +29,15 @@ def normalize_search_text(value: object) -> str:
     return _NON_ALPHANUMERIC.sub(" ", text).strip()
 
 
+def normalize_search_compact(value: object) -> str:
+    """Return the punctuation-deleted companion form without losing token boundaries."""
+
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = _APOSTROPHES.sub("", text)
+    text = text.replace("&", "and")
+    return _NON_ALPHANUMERIC.sub("", text)
+
+
 def fts_prefix_query(value: object) -> str:
     """Build a safe token-prefix FTS query from canonical normalized text."""
 
@@ -85,7 +94,7 @@ def rebuild_instrument_search_index(
         normalized = normalize_search_text(name)
         if normalized:
             documents.add((int(instrument_id), normalized, "security_name"))
-            compact = normalized.replace(" ", "")
+            compact = normalize_search_compact(name)
             if compact != normalized:
                 documents.add((int(instrument_id), compact, "security_name_compact"))
     for instrument_id, alias, alias_kind in aliases:
@@ -95,7 +104,7 @@ def rebuild_instrument_search_index(
         normalized = normalize_search_text(alias)
         if normalized:
             documents.add((int(instrument_id), normalized, "alias"))
-            compact = normalized.replace(" ", "")
+            compact = normalize_search_compact(alias)
             if compact != normalized:
                 documents.add((int(instrument_id), compact, "alias_compact"))
     connection.executemany(

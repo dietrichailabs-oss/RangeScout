@@ -15,6 +15,7 @@ from app.ui.branding import application_resource_root
 from app.market_data.provider_symbols import derive_yahoo_provider_symbol, is_placeholder_symbol
 from app.company_data.search_normalization import (
     fts_prefix_query,
+    normalize_search_compact,
     normalize_search_text,
     rebuild_instrument_search_index,
 )
@@ -643,7 +644,7 @@ class InstrumentResolver:
             return []
         upper, normalized = raw.upper(), normalize_search_text(raw)
         fts_query = fts_prefix_query(raw)
-        fts_compact_query = fts_prefix_query(normalized.replace(" ", ""))
+        fts_compact_query = fts_prefix_query(normalize_search_compact(raw))
         with closing(sqlite3.connect(self.path, timeout=10)) as con:
             con.row_factory = sqlite3.Row
             exact_rows = con.execute(
@@ -836,7 +837,8 @@ class InstrumentResolver:
         alias_upper = {value.upper() for value in aliases}
         name_norm = normalize_search_text(name)
         issuer_norm = normalize_issuer_name(name)
-        normalized_compact = normalized.replace(" ", "")
+        normalized_compact = normalize_search_compact(raw)
+        name_compact = normalize_search_compact(name)
         issuer_compact = issuer_norm.replace(" ", "")
         security_type = str(row["security_type"] or "")
         subtype = str(row["instrument_subtype"] or "")
@@ -852,11 +854,11 @@ class InstrumentResolver:
             score, kind, matched = 1080, "exact_name", name
         elif normalized and (normalized == issuer_norm or normalized_compact == issuer_compact):
             score, kind, matched = 1040, "issuer_name", name
-        elif normalized and normalized == name_norm:
+        elif normalized and (normalized == name_norm or normalized_compact == name_compact):
             score, kind, matched = 1020, "normalized_name", name
         elif normalized and (issuer_norm.startswith(normalized) or issuer_compact.startswith(normalized_compact)):
             score, kind, matched = 860 - min(100, len(issuer_compact) - len(normalized_compact)), "issuer_prefix", name
-        elif normalized and name_norm.startswith(normalized):
+        elif normalized and (name_norm.startswith(normalized) or name_compact.startswith(normalized_compact)):
             score, kind, matched = 860 - min(100, len(name_norm) - len(normalized)), "name_prefix", name
         elif symbol.startswith(upper):
             score, kind, matched = 790 - min(100, len(symbol) - len(upper)), "symbol_prefix", symbol
