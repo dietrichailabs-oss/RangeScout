@@ -291,9 +291,9 @@ def test_amendment_and_growth_results_are_row_order_independent() -> None:
 
 
 
-def test_conflicting_quarter_fp_and_frame_is_not_used_for_growth() -> None:
+def test_calendar_frame_that_contradicts_economic_end_date_is_not_used() -> None:
     rows = [
-        fact(400, start="2025-07-01", end="2025-09-30", filed="2025-11-01", form="10-Q", accession="conflict", fy=2025, fp="Q3", frame="CY2025Q2"),
+        fact(400, start="2025-07-01", end="2025-09-30", filed="2025-11-01", form="10-Q", accession="bad-frame", fy=2025, fp="Q3", frame="CY2025Q2"),
         fact(300, start="2024-07-01", end="2024-09-30", filed="2024-11-01", form="10-Q", accession="prior", fy=2024, fp="Q3", frame="CY2024Q3"),
     ]
     payload = {"us-gaap": {"RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": rows}}}}
@@ -301,14 +301,15 @@ def test_conflicting_quarter_fp_and_frame_is_not_used_for_growth() -> None:
     assert growth.availability is Availability.NOT_AVAILABLE
 
 
-def test_conflicting_fiscal_year_and_frame_is_not_used_for_growth() -> None:
+def test_fiscal_identity_may_legitimately_differ_from_calendar_frame() -> None:
     rows = [
-        fact(400, start="2025-07-01", end="2025-09-30", filed="2025-11-01", form="10-Q", accession="conflict", fy=2024, fp="Q3", frame="CY2025Q3"),
-        fact(300, start="2024-07-01", end="2024-09-30", filed="2024-11-01", form="10-Q", accession="prior", fy=2024, fp="Q3", frame="CY2024Q3"),
+        fact(110, start="2024-09-29", end="2024-12-28", filed="2025-02-01", form="10-Q", accession="fy25-q1", fy=2025, fp="Q1", frame="CY2024Q4"),
+        fact(100, start="2023-10-01", end="2023-12-30", filed="2024-02-01", form="10-Q", accession="fy24-q1", fy=2024, fp="Q1", frame="CY2023Q4"),
     ]
     payload = {"us-gaap": {"RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": rows}}}}
     growth = snapshot(payload, mode="quarterly").sections["Growth"]["Revenue growth"]
-    assert growth.availability is Availability.NOT_AVAILABLE
+    assert growth.value == Decimal(10)
+    assert growth.comparability_result == "quarterly year-over-year: Q1 fiscal year 2024 compared with fiscal year 2025"
 
 
 def test_partial_amendment_never_crosses_annual_form_families() -> None:
