@@ -24,6 +24,7 @@ from app.company_data.instrument_intelligence import (
     default_issuer_entity_type,
 )
 from app.market_data.provider_symbols import derive_yahoo_provider_symbol
+from app.company_data.search_normalization import normalize_search_text, rebuild_instrument_search_index
 
 
 WEEK_SECONDS = 7 * 24 * 60 * 60
@@ -78,7 +79,7 @@ def _persist_official_aliases(connection, instrument_id: int, item: DiscoveredIn
                ON CONFLICT(instrument_id,alias_symbol,venue,alias_kind) DO UPDATE SET
                  source_id=excluded.source_id,last_verified_utc=excluded.last_verified_utc""",
             (instrument_id, alias, normalize_listing_venue(item.primary_venue)[0], kind, source_id, stamp,
-             normalize_listing_name(alias), 0, stamp),
+             normalize_search_text(alias), 0, stamp),
         )
 
 
@@ -135,6 +136,12 @@ def _enrich_discovered_instrument(connection, instrument_id: int, item: Discover
                              "discovery_source": source_id}, sort_keys=True),
                  "derived_official_aliases", json.dumps(["candles", "historical", "quote"]), stamp),
             )
+    if status != "supported":
+        connection.execute(
+            """UPDATE rs_provider_symbols SET is_active=0
+               WHERE provider_id='yahoo' AND instrument_id=? AND mapping_status LIKE 'derived_%'""",
+            (instrument_id,),
+        )
     for capability in ("quote", "historical", "candles"):
         connection.execute(
             """INSERT OR REPLACE INTO rs_provider_instrument_support(provider_id,instrument_id,capability,
@@ -667,6 +674,7 @@ class InstrumentDiscovery:
                 "UPDATE rs_discovery_sources SET last_success_utc=?,next_due_utc=?,updated_at_utc=? WHERE source_id=?",
                 (stamp, (current + timedelta(seconds=WEEK_SECONDS)).isoformat(), stamp, source_id),
             )
+            rebuild_instrument_search_index(connection)
             connection.commit()
         except Exception:
             connection.rollback()

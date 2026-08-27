@@ -13,6 +13,11 @@ from typing import Callable, Iterable, Mapping
 
 from app.ui.branding import application_resource_root
 from app.market_data.provider_symbols import derive_yahoo_provider_symbol, is_placeholder_symbol
+from app.company_data.search_normalization import (
+    fts_prefix_query,
+    normalize_search_text,
+    rebuild_instrument_search_index,
+)
 from app.instruments.security_classification import (
     classify_official_security, has_explicit_etf_marker, has_explicit_etn_marker,
 )
@@ -26,7 +31,7 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 8
+_REFERENCE_VERSION = 9
 _REFERENCE_TIME = "2026-08-26T00:00:00+00:00"
 _CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
 _COMMON_SECURITY_MARKER = re.compile(
@@ -103,14 +108,10 @@ def classify_unit_semantics(name: object, issuer_type: object = "") -> tuple[str
     return issuer, "alternate_security", "unit lacks sufficient operating-issuer ownership evidence"
 
 
-def normalize_search_text(value: object) -> str:
-    return _SPACE.sub(" ", _SUFFIX.sub(" ", str(value or "")).lower()).strip()
-
-
 def normalize_issuer_name(value: object) -> str:
     """Normalize an official listing name down to issuer intent, not security series."""
 
-    return _SPACE.sub(" ", _SECURITY_DESCRIPTORS.sub(" ", _SUFFIX.sub(" ", str(value or "")).lower())).strip()
+    return normalize_search_text(_SECURITY_DESCRIPTORS.sub(" ", str(value or "")))
 
 
 def canonical_asset_class(asset_class: object, subtype: object = "", security_type: object = "", name: object = "") -> str:
@@ -318,6 +319,8 @@ class InstrumentReferenceSeeder:
             con.row_factory = sqlite3.Row
             current = con.execute("SELECT value FROM rs_schema_meta WHERE key='instrument_reference_version'").fetchone()
             if current and int(current[0]) >= _REFERENCE_VERSION:
+                rebuild_instrument_search_index(con)
+                con.commit()
                 return 0
             con.execute("BEGIN IMMEDIATE")
             changed_before = con.total_changes
@@ -399,6 +402,7 @@ class InstrumentReferenceSeeder:
             con.execute("CREATE INDEX IF NOT EXISTS idx_rs_instrument_name_search ON rs_instruments(security_name, is_active, search_priority)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_rs_alias_normalized_search ON rs_instrument_aliases(normalized_alias, ranking_boost)")
             changed = con.total_changes - changed_before
+            rebuild_instrument_search_index(con)
             con.commit()
             return changed
 
@@ -546,6 +550,12 @@ class InstrumentReferenceSeeder:
                             _REFERENCE_TIME,
                         ),
                     )
+            if status != "supported":
+                con.execute(
+                    """UPDATE rs_provider_symbols SET is_active=0
+                       WHERE provider_id='yahoo' AND instrument_id=? AND mapping_status LIKE 'derived_%'""",
+                    (instrument_id,),
+                )
             for capability in ("quote", "historical", "candles"):
                 con.execute(
                     """INSERT OR REPLACE INTO rs_provider_instrument_support(
@@ -632,8 +642,8 @@ class InstrumentResolver:
         if not raw:
             return []
         upper, normalized = raw.upper(), normalize_search_text(raw)
-        token = f"%{raw}%"
-        compact = "%" + re.sub(r"[^A-Z0-9]", "", upper) + "%"
+        fts_query = fts_prefix_query(raw)
+        fts_compact_query = fts_prefix_query(normalized.replace(" ", ""))
         with closing(sqlite3.connect(self.path, timeout=10)) as con:
             con.row_factory = sqlite3.Row
             exact_rows = con.execute(
@@ -671,20 +681,25 @@ class InstrumentResolver:
                     """SELECT i.*,GROUP_CONCAT(a.alias_symbol,'|') aliases,
                               GROUP_CONCAT(COALESCE(a.normalized_alias,''),'|') normalized_aliases,
                               MAX(COALESCE(a.ranking_boost,0)) alias_boost
-                       FROM rs_instruments i LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
+                       FROM rs_instruments i JOIN (
+                         SELECT DISTINCT CAST(instrument_id AS INTEGER) instrument_id
+                         FROM rs_instrument_search_fts WHERE rs_instrument_search_fts MATCH ?
+                         UNION
+                         SELECT DISTINCT CAST(instrument_id AS INTEGER) instrument_id
+                         FROM rs_instrument_search_fts WHERE rs_instrument_search_fts MATCH ?
+                         UNION
+                         SELECT instrument_id FROM rs_instruments
+                         WHERE canonical_symbol LIKE ? COLLATE NOCASE
+                       ) candidates ON candidates.instrument_id=i.instrument_id
+                       LEFT JOIN rs_instrument_aliases a ON a.instrument_id=i.instrument_id
                      AND LOWER(COALESCE(a.alias_kind,'')) NOT IN (
                        'official_directory_symbol','official_source_symbol_variant','source_symbol','provider_symbol'
                      )
-                       WHERE i.is_active=1 AND (
-                          UPPER(i.canonical_symbol)=? OR UPPER(COALESCE(a.alias_symbol,''))=?
-                          OR i.security_name LIKE ? COLLATE NOCASE OR i.canonical_symbol LIKE ? COLLATE NOCASE
-                          OR COALESCE(a.alias_symbol,'') LIKE ? COLLATE NOCASE
-                          OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(i.security_name),' ',''),'-',''),'.',''),',',''),'&','') LIKE ?
-                       )
+                       WHERE i.is_active=1
                        GROUP BY i.instrument_id ORDER BY i.is_active DESC,
                          CASE WHEN UPPER(COALESCE(i.security_type,''))='COMMON STOCK' THEN 0 ELSE 1 END,
                          i.search_priority DESC LIMIT 1000""",
-                    (upper, upper, token, f"{raw}%", f"{raw}%", compact),
+                    (fts_query, fts_compact_query, f"{raw}%"),
                 ).fetchall()
                 matches = [self._match(con, row, raw, upper, normalized) for row in rows]
         ranked = [item for item in matches if item.match_kind != "none" and item.score > 0]
@@ -698,6 +713,19 @@ class InstrumentResolver:
             identity_tier.get(item.match_kind, 2), -item.score,
             -item.instrument.instrument_id, item.symbol, item.exchange,
         ))
+        duplicate_name_positions: dict[tuple[int, int, str, str], list[int]] = {}
+        for index, item in enumerate(ranked):
+            key = (
+                identity_tier.get(item.match_kind, 2), item.score,
+                normalize_search_text(item.name), item.exchange,
+            )
+            duplicate_name_positions.setdefault(key, []).append(index)
+        for positions in duplicate_name_positions.values():
+            if len(positions) < 2:
+                continue
+            ordered = sorted((ranked[index] for index in positions), key=lambda item: item.symbol)
+            for index, item in zip(positions, ordered):
+                ranked[index] = item
         return ranked[:max(1, min(50, int(limit)))]
 
     def resolve_unique(self, query: str) -> InstrumentMatch | None:
@@ -798,6 +826,7 @@ class InstrumentResolver:
                      now, now, "discovered", now),
                 )
                 changed += con.total_changes - before
+            rebuild_instrument_search_index(con)
             con.commit()
         return changed
 

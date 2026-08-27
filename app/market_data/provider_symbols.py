@@ -84,6 +84,37 @@ def derive_yahoo_provider_symbol(
         return ProviderSymbolDecision(
             "yahoo", canonical, None, "unsupported", "source_placeholder", "source_data_hygiene"
         )
+    alias_rows = {
+        (str(alias or "").strip().upper(), str(kind or "").strip().lower())
+        for alias, kind in aliases
+        if is_provider_scoped_alias_kind(kind)
+    }
+    observed = {alias for alias, _kind in alias_rows}
+    if "." in canonical:
+        explicit = sorted(
+            alias for alias, kind in alias_rows
+            if kind == "provider_symbol" and alias != canonical
+        )
+        for alias in explicit:
+            try:
+                provider_symbol = normalize_yahoo_symbol(alias)
+            except ProviderSymbolError:
+                continue
+            return ProviderSymbolDecision(
+                "yahoo", canonical, provider_symbol, "supported", "explicit_provider_symbol_mapping",
+                "provider_specific_alias", (alias,),
+            )
+        official_dash = canonical.replace(".", "-")
+        if official_dash in observed:
+            provider_symbol = normalize_yahoo_symbol(official_dash)
+            return ProviderSymbolDecision(
+                "yahoo", canonical, provider_symbol, "supported", "official_source_dot_dash_crosswalk",
+                "official_source_symbol_variant", (official_dash,),
+            )
+        return ProviderSymbolDecision(
+            "yahoo", canonical, None, "unsupported", "unverified_dot_provider_identity",
+            "provider_identity_not_established", tuple(sorted(observed)),
+        )
     try:
         normalized = normalize_yahoo_symbol(canonical)
     except ProviderSymbolError as canonical_error:
@@ -93,14 +124,8 @@ def derive_yahoo_provider_symbol(
                 "yahoo", canonical, None, "unsupported", str(canonical_error), "provider_syntax_validation"
             )
         base, suffix = series.groups()
-        alias_rows = {
-            (str(alias or "").strip().upper(), str(kind or "").strip().lower())
-            for alias, kind in aliases
-            if is_provider_scoped_alias_kind(kind)
-        }
         directory_dash = f"{base}-{suffix}"
         directory_compact = f"{base}P{suffix}"
-        observed = {alias for alias, _kind in alias_rows}
         if directory_dash not in observed or directory_compact not in observed:
             return ProviderSymbolDecision(
                 "yahoo", canonical, None, "unsupported", "missing_cross_source_series_alias_evidence",

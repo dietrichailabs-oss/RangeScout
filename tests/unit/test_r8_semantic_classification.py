@@ -113,7 +113,7 @@ def test_schema_v11_is_additive_and_idempotent() -> None:
     )
     apply_migrations(connection, 10)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(rs_instruments)")}
-    assert CURRENT_SCHEMA_VERSION == 14
+    assert CURRENT_SCHEMA_VERSION == 15
     assert {"issuer_entity_type", "security_role"}.issubset(columns)
     assert connection.execute(
         "SELECT issuer_entity_type,security_role FROM rs_instruments WHERE instrument_id=1"
@@ -137,5 +137,5 @@ def test_schema_v11_recovery_is_idempotent_when_columns_already_exist() -> None:
     apply_migrations(connection, 10)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(rs_instruments)")}
     assert {"issuer_entity_type", "security_role"}.issubset(columns)
-    assert connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "14"
+    assert connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "15"
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

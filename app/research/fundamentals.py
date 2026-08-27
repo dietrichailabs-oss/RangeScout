@@ -27,6 +27,16 @@ SEC_MIN_REQUEST_INTERVAL_SECONDS = 0.125  # 8 requests/sec, below SEC's publishe
 
 
 @dataclass(frozen=True, slots=True)
+class ReportingRegime:
+    taxonomy: str
+    currency: str
+    period: date
+    filed: date
+    form: str
+    accession: str
+
+
+@dataclass(frozen=True, slots=True)
 class SecFactCandidate:
     concept: str
     unit: str
@@ -277,12 +287,14 @@ class ResearchService:
         if not isinstance(facts_root, dict):
             facts_root = {}
         forms = self.QUARTERLY_FORMS if period_mode == "quarterly" else self.ANNUAL_FORMS
-        taxonomy = self._choose_taxonomy(facts_root, forms, period_mode)
+        regime = self._select_reporting_regime(facts_root, forms)
+        taxonomy = regime.taxonomy if regime is not None else "us-gaap"
         mapping = self.TAXONOMIES[taxonomy]
         taxonomy_facts = facts_root.get(taxonomy, {})
         if not isinstance(taxonomy_facts, dict):
             taxonomy_facts = {}
-        currency = self._reporting_currency(taxonomy_facts, mapping, forms)
+        currency = regime.currency if regime is not None else None
+        current_facts = self._facts_for_regime(taxonomy_facts, mapping, regime)
         source = "SEC companyfacts" if taxonomy == "us-gaap" else "SEC companyfacts (ifrs-full)"
         profile = CompanyProfile(
             normalized,
@@ -296,7 +308,7 @@ class ResearchService:
         for name, (concepts, unit_kind) in mapping.items():
             units = self._units_for(unit_kind, currency)
             selected[name] = self.selector.select(
-                taxonomy_facts, concepts, units, forms=forms, source=source,
+                current_facts, concepts, units, forms=forms, source=source,
             )
         selected["Revenue previous"] = self._previous(
             taxonomy_facts, mapping, "Revenue", selected["Revenue"], forms, source,
@@ -304,7 +316,15 @@ class ResearchService:
         selected["Net income previous"] = self._previous(
             taxonomy_facts, mapping, "Net income", selected["Net income"], forms, source,
         )
-        warnings = (f"SEC taxonomy: {taxonomy}; reporting currency: {currency or 'not available'}; no currency conversion performed.",)
+        regime_detail = (
+            f"; current period: {regime.period.isoformat()}; filing: {regime.filed.isoformat()} "
+            f"{regime.form}; accession: {regime.accession or 'not supplied'}"
+            if regime is not None else "; no eligible current reporting regime"
+        )
+        warnings = (
+            f"SEC taxonomy: {taxonomy}; reporting currency: {currency or 'not available'}"
+            f"{regime_detail}; no currency conversion performed.",
+        )
         return ResearchSnapshot(normalized, generation, profile, _build_sections(selected), now, warnings)
 
     @staticmethod
@@ -317,45 +337,76 @@ class ResearchService:
         return tuple(candidates)
 
     def _choose_taxonomy(self, facts_root: dict[str, Any], forms: frozenset[str], period_mode: str) -> str:
-        scored: list[tuple[tuple[int, int, str, int, int], str]] = []
+        regime = self._select_reporting_regime(facts_root, forms)
+        if regime is not None:
+            return regime.taxonomy
+        return "ifrs-full" if period_mode == "quarterly" and facts_root.get("ifrs-full") else "us-gaap"
+
+    def _select_reporting_regime(
+        self, facts_root: dict[str, Any], forms: frozenset[str],
+    ) -> ReportingRegime | None:
+        grouped: dict[tuple[str, date, str, str], dict[str, object]] = {}
         for taxonomy, mapping in self.TAXONOMIES.items():
             facts = facts_root.get(taxonomy, {})
             if not isinstance(facts, dict):
-                facts = {}
-            native_rows = 0
-            total_rows = 0
-            covered: set[str] = set()
-            latest = ""
-            for metric, (concepts, _kind) in mapping.items():
+                continue
+            for metric, (concepts, kind) in mapping.items():
+                if kind != "monetary":
+                    continue
                 for concept in concepts:
                     node = facts.get(concept)
                     units = node.get("units", {}) if isinstance(node, dict) else {}
                     if not isinstance(units, dict):
                         continue
-                    for rows in units.values():
-                        if not isinstance(rows, list):
+                    for unit, rows in units.items():
+                        currency = str(unit).upper()
+                        if not re.fullmatch(r"[A-Z]{3}", currency) or not isinstance(rows, list):
                             continue
-                        for row in rows:
-                            if not isinstance(row, dict) or str(row.get("form")) not in forms:
+                        for raw in rows:
+                            candidate = self.selector._candidate(concept, currency, raw)
+                            if candidate is None or candidate.form not in forms:
                                 continue
-                            total_rows += 1
-                            covered.add(metric)
-                            latest = max(latest, str(row.get("filed") or ""))
-                            if str(row.get("form")) in self.NATIVE_FORMS[taxonomy]:
-                                native_rows += 1
-            preference = 1 if taxonomy == "us-gaap" else 0
-            scored.append(((native_rows, len(covered), latest, total_rows, preference), taxonomy))
-        winner = max(scored)[1]
-        if period_mode == "quarterly" and not facts_root.get(winner) and isinstance(facts_root.get("ifrs-full"), dict):
-            return "ifrs-full"
-        return winner
+                            filing_key = candidate.accession or candidate.filed.isoformat()
+                            key = (taxonomy, candidate.end, candidate.form, filing_key)
+                            group = grouped.setdefault(key, {
+                                "filed": candidate.filed,
+                                "accession": candidate.accession,
+                                "metrics": set(),
+                                "currencies": {},
+                            })
+                            group["filed"] = max(group["filed"], candidate.filed)
+                            group["metrics"].add(metric)
+                            currencies = group["currencies"]
+                            currencies.setdefault(currency, set()).add(metric)
+        if not grouped:
+            return None
+
+        def group_rank(item):
+            (taxonomy, period, form, _filing_key), data = item
+            native = int(form in self.NATIVE_FORMS[taxonomy])
+            amended = int(form.endswith("/A"))
+            return (
+                period,
+                data["filed"],
+                native,
+                amended,
+                len(data["metrics"]),
+                int(taxonomy == "us-gaap"),
+            )
+
+        (taxonomy, period, form, _filing_key), data = max(grouped.items(), key=group_rank)
+        currencies = data["currencies"]
+        currency = max(currencies, key=lambda value: (len(currencies[value]), value))
+        return ReportingRegime(
+            taxonomy, currency, period, data["filed"], form, str(data["accession"] or ""),
+        )
 
     @staticmethod
     def _reporting_currency(
         facts: dict[str, Any], mapping: dict[str, tuple[tuple[str, ...], str]], forms: frozenset[str],
     ) -> str | None:
-        counts: Counter[str] = Counter()
-        latest: dict[str, str] = {}
+        regimes: dict[tuple[date, date, str], set[str]] = {}
+        selector = SecFactSelector()
         for concepts, kind in mapping.values():
             if kind != "monetary":
                 continue
@@ -365,14 +416,59 @@ class ResearchService:
                 if not isinstance(units, dict):
                     continue
                 for unit, rows in units.items():
-                    normalized = str(unit).upper()
-                    if not re.fullmatch(r"[A-Z]{3}", normalized) or not isinstance(rows, list):
+                    currency = str(unit).upper()
+                    if not re.fullmatch(r"[A-Z]{3}", currency) or not isinstance(rows, list):
                         continue
-                    eligible = [row for row in rows if isinstance(row, dict) and str(row.get("form")) in forms]
-                    counts[normalized] += len(eligible)
-                    for row in eligible:
-                        latest[normalized] = max(latest.get(normalized, ""), str(row.get("filed") or ""))
-        return max(counts, key=lambda unit: (counts[unit], latest.get(unit, ""), unit)) if counts else None
+                    for raw in rows:
+                        candidate = selector._candidate(concept, currency, raw)
+                        if candidate is None or candidate.form not in forms:
+                            continue
+                        key = (candidate.end, candidate.filed, candidate.accession)
+                        regimes.setdefault(key, set()).add(currency)
+        if not regimes:
+            return None
+        latest = max(regimes)
+        return sorted(regimes[latest])[0]
+
+    @staticmethod
+    def _facts_for_regime(
+        facts: dict[str, Any],
+        mapping: dict[str, tuple[tuple[str, ...], str]],
+        regime: ReportingRegime | None,
+    ) -> dict[str, Any]:
+        if regime is None:
+            return {}
+        filtered: dict[str, Any] = {}
+        for concepts, kind in mapping.values():
+            accepted_units = (
+                {regime.currency} if kind == "monetary"
+                else {f"{regime.currency}/shares"} if kind == "per_share"
+                else {"shares"}
+            )
+            for concept in concepts:
+                node = facts.get(concept)
+                units = node.get("units", {}) if isinstance(node, dict) else {}
+                if not isinstance(units, dict):
+                    continue
+                kept_units: dict[str, list[object]] = {}
+                for unit, rows in units.items():
+                    if unit not in accepted_units or not isinstance(rows, list):
+                        continue
+                    kept = []
+                    for row in rows:
+                        if not isinstance(row, dict) or str(row.get("end") or "") != regime.period.isoformat():
+                            continue
+                        if regime.accession:
+                            if str(row.get("accn") or "") != regime.accession:
+                                continue
+                        elif str(row.get("filed") or "") != regime.filed.isoformat():
+                            continue
+                        kept.append(row)
+                    if kept:
+                        kept_units[str(unit)] = kept
+                if kept_units:
+                    filtered[concept] = {"units": kept_units}
+        return filtered
 
     @staticmethod
     def _units_for(kind: str, currency: str | None) -> tuple[str, ...]:
