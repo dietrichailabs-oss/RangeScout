@@ -12,8 +12,18 @@ from app.research.fundamentals import SEC_MIN_REQUEST_INTERVAL_SECONDS, Research
 from app.research.models import Availability
 
 
-def _fact(value: int, *, end: str, filed: str, form: str = "10-K", accn: str = "1", fy: int = 2025, fp: str = "FY") -> dict[str, object]:
-    return {"val": value, "end": end, "filed": filed, "form": form, "accn": accn, "fy": fy, "fp": fp}
+def _fact(
+    value: int, *, end: str, filed: str, form: str = "10-K", accn: str = "1",
+    fy: int = 2025, fp: str = "FY", start: str | None = None, frame: str | None = None,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "val": value, "end": end, "filed": filed, "form": form, "accn": accn, "fy": fy, "fp": fp,
+    }
+    if start:
+        result["start"] = start
+    if frame:
+        result["frame"] = frame
+    return result
 
 
 @pytest.mark.parametrize(
@@ -51,12 +61,18 @@ def test_selector_returns_explicit_na_for_missing_or_malformed_facts() -> None:
 
 def test_selector_respects_annual_and_quarterly_filing_modes() -> None:
     facts = {"Revenue": {"units": {"USD": [
-        _fact(400, end="2025-12-31", filed="2026-02-01", form="10-K"),
-        _fact(110, end="2026-03-31", filed="2026-05-01", form="10-Q", fy=2026, fp="Q1"),
+        _fact(400, end="2025-12-31", filed="2026-02-01", form="10-K", start="2025-01-01", frame="CY2025"),
+        _fact(110, end="2026-03-31", filed="2026-05-01", form="10-Q", fy=2026, fp="Q1", start="2026-01-01", frame="CY2026Q1"),
     ]}}}
     selector = SecFactSelector()
-    annual = selector.select(facts, ("Revenue",), ("USD",), forms=frozenset({"10-K", "10-K/A"}))
-    quarterly = selector.select(facts, ("Revenue",), ("USD",), forms=frozenset({"10-Q", "10-Q/A"}))
+    annual = selector.select(
+        facts, ("Revenue",), ("USD",), forms=frozenset({"10-K", "10-K/A"}),
+        metric_type="duration", period_mode="annual", taxonomy="us-gaap",
+    )
+    quarterly = selector.select(
+        facts, ("Revenue",), ("USD",), forms=frozenset({"10-Q", "10-Q/A"}),
+        metric_type="duration", period_mode="quarterly", taxonomy="us-gaap",
+    )
     assert annual.value == Decimal(400)
     assert annual.period == "2025-12-31"
     assert quarterly.value == Decimal(110)
@@ -109,8 +125,8 @@ def test_research_service_preserves_provenance_and_explicit_unavailable_sections
             return {"entityName": "Acme Corp", "facts": {"us-gaap": {
                 "Assets": {"units": {"USD": [_fact(100, end="2025-12-31", filed="2026-02-01")]}},
                 "RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": [
-                    _fact(120, end="2025-12-31", filed="2026-02-01"),
-                    _fact(100, end="2024-12-31", filed="2025-02-01", fy=2024),
+                    _fact(120, end="2025-12-31", filed="2026-02-01", start="2025-01-01", frame="CY2025"),
+                    _fact(100, end="2024-12-31", filed="2025-02-01", fy=2024, start="2024-01-01", frame="CY2024"),
                 ]}},
             }}}
 

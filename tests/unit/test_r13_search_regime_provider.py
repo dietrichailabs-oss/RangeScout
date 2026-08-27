@@ -76,7 +76,7 @@ def test_search_candidate_retrieval_uses_fts_index(r13_database: Path) -> None:
         ).fetchall()
         version = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
         documents = connection.execute("SELECT COUNT(*) FROM rs_instrument_search_fts").fetchone()[0]
-    assert int(version) == CURRENT_SCHEMA_VERSION == 15
+    assert int(version) == CURRENT_SCHEMA_VERSION == 16
     assert documents >= 16_382
     assert any("VIRTUAL TABLE INDEX" in str(row).upper() for row in plan)
 
@@ -89,8 +89,10 @@ def fact(
     form: str,
     fy: int,
     accession: str,
+    start: str | None = None,
+    frame: str | None = None,
 ) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "val": value,
         "end": end,
         "filed": filed,
@@ -99,6 +101,11 @@ def fact(
         "fy": fy,
         "fp": "FY",
     }
+    if start:
+        result["start"] = start
+    if frame:
+        result["frame"] = frame
+    return result
 
 
 class FixtureClient:
@@ -136,6 +143,7 @@ def monetary_taxonomy(
     for index, concept in enumerate(names):
         if index == 0 and not include_revenue:
             continue
+        duration_metric = index in {0, 1}
         result[concept] = {"units": {currency: [fact(
             value + index,
             end=end,
@@ -143,6 +151,8 @@ def monetary_taxonomy(
             form=form,
             fy=fy,
             accession=accession,
+            start=f"{fy}-01-01" if duration_metric else None,
+            frame=f"CY{fy}" if duration_metric else f"CY{fy}I",
         )]}}
     return result
 
@@ -170,7 +180,14 @@ def test_latest_reporting_regime_beats_larger_older_taxonomy_history(
     # Historical abundance must not outweigh the current period.
     for node in older.values():
         rows = next(iter(node["units"].values()))
-        rows.extend([dict(rows[0], end="2023-12-31", filed="2024-04-01", accn="older", fy=2023)])
+        replacement = dict(rows[0], end="2023-12-31", filed="2024-04-01", accn="older", fy=2023)
+        if "start" in replacement:
+            replacement["start"] = "2023-01-01"
+        if str(replacement.get("frame", "")).endswith("I"):
+            replacement["frame"] = "CY2023I"
+        elif "frame" in replacement:
+            replacement["frame"] = "CY2023"
+        rows.append(replacement)
     snapshot = ResearchService(FixtureClient({current_taxonomy: current, old_taxonomy: older})).load("TEST")
     revenue = snapshot.sections["Overview"]["Revenue"]
     assert revenue.availability is Availability.AVAILABLE

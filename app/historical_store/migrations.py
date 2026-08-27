@@ -18,9 +18,10 @@ from app.historical_store.schema_v12 import MIGRATION_12_SQL, repair_r8_discover
 from app.historical_store.schema_v13 import MIGRATION_13_SQL
 from app.historical_store.schema_v14 import MIGRATION_14_SQL
 from app.historical_store.schema_v15 import MIGRATION_15_SQL, backfill_r13_search_index
+from app.historical_store.schema_v16 import MIGRATION_16_SQL, backfill_r14_optional_conjunction_index
 
 
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 
 
 def current_schema_version() -> int:
@@ -45,6 +46,7 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
         13: MIGRATION_13_SQL,
         14: MIGRATION_14_SQL,
         15: MIGRATION_15_SQL,
+        16: MIGRATION_16_SQL,
     }
     for target in range(existing_version + 1, CURRENT_SCHEMA_VERSION + 1):
         connection.execute("BEGIN IMMEDIATE")
@@ -67,6 +69,8 @@ def apply_migrations(connection: sqlite3.Connection, existing_version: int) -> N
                 repair_r8_discovery_duplicates(connection)
             if target == 15:
                 backfill_r13_search_index(connection)
+            if target == 16:
+                backfill_r14_optional_conjunction_index(connection)
             connection.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(target),),

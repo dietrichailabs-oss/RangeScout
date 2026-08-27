@@ -15,6 +15,7 @@ from app.ui.branding import application_resource_root
 from app.market_data.provider_symbols import derive_yahoo_provider_symbol, is_placeholder_symbol
 from app.company_data.search_normalization import (
     fts_prefix_query,
+    optional_conjunction_variants,
     normalize_search_compact,
     normalize_search_text,
     rebuild_instrument_search_index,
@@ -32,7 +33,7 @@ _SECURITY_DESCRIPTORS = re.compile(
     r"warrants?|rights?|units?|notes?|bonds?|exchange traded fund|etf|etn)\b",
     re.I,
 )
-_REFERENCE_VERSION = 9
+_REFERENCE_VERSION = 10
 _REFERENCE_TIME = "2026-08-26T00:00:00+00:00"
 _CLASSIFICATION_FILENAME = "RangeScout_Instrument_Classifications.json"
 _COMMON_SECURITY_MARKER = re.compile(
@@ -724,7 +725,9 @@ class InstrumentResolver:
         for positions in duplicate_name_positions.values():
             if len(positions) < 2:
                 continue
-            ordered = sorted((ranked[index] for index in positions), key=lambda item: item.symbol)
+            ordered = sorted(
+                (ranked[index] for index in positions), key=lambda item: (len(item.symbol), item.symbol)
+            )
             for index, item in zip(positions, ordered):
                 ranked[index] = item
         return ranked[:max(1, min(50, int(limit)))]
@@ -758,7 +761,10 @@ class InstrumentResolver:
             family_matches = [
                 item for item in results
                 if item.score >= first.score - 250
-                and item.match_kind in {"issuer_name", "issuer_prefix", "name_prefix", "normalized_name"}
+                and item.match_kind in {
+                    "issuer_name", "issuer_prefix", "name_prefix", "normalized_name",
+                    "optional_conjunction_issuer", "optional_conjunction_name", "optional_conjunction_prefix",
+                }
                 and normalize_issuer_name(item.name).startswith(normalized_query)
             ]
             family_roles = {item.instrument.security_role for item in family_matches}
@@ -840,6 +846,8 @@ class InstrumentResolver:
         normalized_compact = normalize_search_compact(raw)
         name_compact = normalize_search_compact(name)
         issuer_compact = issuer_norm.replace(" ", "")
+        optional_name_forms = set(optional_conjunction_variants(name))
+        optional_issuer_forms = set(optional_conjunction_variants(_SECURITY_DESCRIPTORS.sub(" ", name)))
         security_type = str(row["security_type"] or "")
         subtype = str(row["instrument_subtype"] or "")
         canonical_asset = canonical_asset_class(str(row["asset_class"] or ""), subtype, security_type, name)
@@ -856,6 +864,19 @@ class InstrumentResolver:
             score, kind, matched = 1040, "issuer_name", name
         elif normalized and (normalized == name_norm or normalized_compact == name_compact):
             score, kind, matched = 1020, "normalized_name", name
+        elif normalized and (
+            normalized in optional_issuer_forms or normalized_compact in optional_issuer_forms
+        ):
+            score, kind, matched = 1100, "optional_conjunction_issuer", name
+        elif normalized and (
+            normalized in optional_name_forms or normalized_compact in optional_name_forms
+        ):
+            score, kind, matched = 1015, "optional_conjunction_name", name
+        elif normalized and any(
+            form.startswith(normalized) or form.startswith(normalized_compact)
+            for form in optional_issuer_forms | optional_name_forms
+        ):
+            score, kind, matched = 855, "optional_conjunction_prefix", name
         elif normalized and (issuer_norm.startswith(normalized) or issuer_compact.startswith(normalized_compact)):
             score, kind, matched = 860 - min(100, len(issuer_compact) - len(normalized_compact)), "issuer_prefix", name
         elif normalized and (name_norm.startswith(normalized) or name_compact.startswith(normalized_compact)):

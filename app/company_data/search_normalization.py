@@ -38,6 +38,40 @@ def normalize_search_compact(value: object) -> str:
     return _NON_ALPHANUMERIC.sub("", text)
 
 
+def optional_conjunction_variants(value: object) -> tuple[str, ...]:
+    """Return safe name forms where a source ampersand may be omitted.
+
+    The omission is generated only from an authoritative name/alias that
+    actually contains ``&``. Query text is never globally stripped of the
+    English word ``and``; this keeps unrelated natural-language searches from
+    being conflated.
+    """
+
+    raw = unicodedata.normalize("NFKC", str(value or ""))
+    if "&" not in raw:
+        return ()
+    omitted = raw.replace("&", " ")
+    normalized = normalize_search_text(omitted)
+    compact = normalize_search_compact(omitted)
+    return tuple(dict.fromkeys(item for item in (normalized, compact) if item))
+
+
+def indexed_search_variants(value: object) -> tuple[tuple[str, str], ...]:
+    """Return canonical, compact and safe source-derived search documents."""
+
+    normalized = normalize_search_text(value)
+    compact = normalize_search_compact(value)
+    variants: list[tuple[str, str]] = []
+    if normalized:
+        variants.append((normalized, "normalized"))
+    if compact and compact != normalized:
+        variants.append((compact, "compact"))
+    for optional in optional_conjunction_variants(value):
+        if optional not in {text for text, _kind in variants}:
+            variants.append((optional, "optional_conjunction"))
+    return tuple(variants)
+
+
 def fts_prefix_query(value: object) -> str:
     """Build a safe token-prefix FTS query from canonical normalized text."""
 
@@ -91,22 +125,14 @@ def rebuild_instrument_search_index(
         )
     documents: set[tuple[int, str, str]] = set()
     for instrument_id, name in instruments:
-        normalized = normalize_search_text(name)
-        if normalized:
-            documents.add((int(instrument_id), normalized, "security_name"))
-            compact = normalize_search_compact(name)
-            if compact != normalized:
-                documents.add((int(instrument_id), compact, "security_name_compact"))
+        for text, variant_kind in indexed_search_variants(name):
+            documents.add((int(instrument_id), text, f"security_name_{variant_kind}"))
     for instrument_id, alias, alias_kind in aliases:
         kind = str(alias_kind or "").strip().lower()
         if kind in _PROVIDER_ALIAS_KINDS:
             continue
-        normalized = normalize_search_text(alias)
-        if normalized:
-            documents.add((int(instrument_id), normalized, "alias"))
-            compact = normalize_search_compact(alias)
-            if compact != normalized:
-                documents.add((int(instrument_id), compact, "alias_compact"))
+        for text, variant_kind in indexed_search_variants(alias):
+            documents.add((int(instrument_id), text, f"alias_{variant_kind}"))
     connection.executemany(
         "INSERT INTO rs_instrument_search_fts(instrument_id,normalized_text,source_kind) VALUES(?,?,?)",
         sorted(documents),

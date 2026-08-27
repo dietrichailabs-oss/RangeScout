@@ -31,6 +31,19 @@ class ResearchValue:
     calculated_at: datetime | None = None
     availability: Availability = Availability.AVAILABLE
     selection_reason: str = ""
+    taxonomy: str | None = None
+    concept: str | None = None
+    accession: str | None = None
+    form: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    fiscal_year: int | None = None
+    fiscal_period: str | None = None
+    frame: str | None = None
+    duration_days: int | None = None
+    period_semantics: str | None = None
+    period_mode: str | None = None
+    comparability_result: str | None = None
 
     @classmethod
     def unavailable(cls, source: str, reason: str) -> "ResearchValue":

@@ -52,9 +52,13 @@ class SecFactCandidate:
 
 
 class SecFactSelector:
-    """Select one auditable fact using stable, documented tie-breakers."""
+    """Select one auditable fact using period-aware stable tie-breakers."""
 
     ELIGIBLE_FORMS = frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A"})
+    ANNUAL_FORMS = frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
+    QUARTERLY_FORMS = frozenset({"10-Q", "10-Q/A"})
+    _ANNUAL_FRAME = re.compile(r"^CY\d{4}$", re.IGNORECASE)
+    _QUARTER_FRAME = re.compile(r"^CY\d{4}Q[1-4]$", re.IGNORECASE)
 
     def select(
         self,
@@ -65,18 +69,25 @@ class SecFactSelector:
         period: str = "latest",
         forms: frozenset[str] | None = None,
         source: str = "SEC companyfacts",
+        metric_type: str = "auto",
+        period_mode: str | None = None,
+        taxonomy: str | None = None,
+        before_end: date | None = None,
+        required_fiscal_period: str | None = None,
+        required_period_semantics: str | None = None,
+        comparable_duration_days: int | None = None,
     ) -> ResearchValue:
         concept_order = {concept: index for index, concept in enumerate(concepts)}
         unit_order = {unit: index for index, unit in enumerate(units)}
         candidates: list[SecFactCandidate] = []
-        for concept, concept_priority in concept_order.items():
+        for concept in concept_order:
             node = facts.get(concept)
             if not isinstance(node, dict):
                 continue
             unit_payloads = node.get("units", {})
             if not isinstance(unit_payloads, dict):
                 continue
-            for unit, unit_priority in unit_order.items():
+            for unit in unit_order:
                 rows = unit_payloads.get(unit, [])
                 if not isinstance(rows, list):
                     continue
@@ -87,32 +98,162 @@ class SecFactSelector:
         if not candidates:
             return ResearchValue.unavailable(source, "No eligible standard-taxonomy fact with an accepted unit.")
 
-        def rank(item: SecFactCandidate) -> tuple[date, date, int, int, int, str]:
+        resolved_metric_type = metric_type
+        if resolved_metric_type == "auto":
+            resolved_metric_type = "duration" if any(item.start is not None for item in candidates) else "instant"
+        if resolved_metric_type not in {"instant", "duration"}:
+            raise ValueError(f"Unsupported SEC metric type: {resolved_metric_type}")
+        resolved_mode = period_mode or self._infer_period_mode(forms)
+        if resolved_metric_type == "duration" and resolved_mode not in {"annual", "quarterly"}:
+            raise ValueError("Duration fact selection requires annual or quarterly period mode.")
+
+        compatible: list[tuple[SecFactCandidate, str, int | None]] = []
+        for item in candidates:
+            if before_end is not None and item.end >= before_end:
+                continue
+            semantics, duration_days = self.period_semantics(item, resolved_metric_type, resolved_mode)
+            if resolved_metric_type == "instant":
+                if semantics != "instant":
+                    continue
+            elif resolved_mode == "annual":
+                if semantics not in {"annual", "annual_transition"}:
+                    continue
+            elif semantics != "quarterly":
+                continue
+            if required_period_semantics and semantics != required_period_semantics:
+                continue
+            if required_fiscal_period and item.fiscal_period != required_fiscal_period:
+                continue
+            if comparable_duration_days is not None:
+                if duration_days is None:
+                    continue
+                tolerance = 45 if resolved_mode == "annual" else 21
+                if abs(duration_days - comparable_duration_days) > tolerance:
+                    continue
+            compatible.append((item, semantics, duration_days))
+
+        if not compatible:
+            target = "point-in-time" if resolved_metric_type == "instant" else f"genuine {resolved_mode}-duration"
+            return ResearchValue.unavailable(
+                source,
+                f"No {target} fact exists in the selected taxonomy, unit, form and reporting regime; "
+                "duration-incompatible quarter/YTD facts were not substituted.",
+            )
+
+        def rank(entry: tuple[SecFactCandidate, str, int | None]) -> tuple[object, ...]:
+            item, semantics, duration_days = entry
             amended = 1 if item.form.endswith("/A") else 0
+            evidence = self._semantic_evidence(item, semantics, duration_days)
+            duration_target = 365 if resolved_mode == "annual" else 91
+            duration_distance = abs((duration_days or duration_target) - duration_target)
             return (
                 item.end,
                 item.filed,
                 amended,
+                evidence,
+                -duration_distance,
                 -concept_order[item.concept],
                 -unit_order[item.unit],
                 item.accession,
+                item.start or date.min,
+                item.frame or "",
+                item.fiscal_period or "",
+                str(item.value),
             )
 
-        winner = max(candidates, key=rank)
+        winner, semantics, duration_days = max(compatible, key=rank)
+        start_text = winner.start.isoformat() if winner.start else "instant"
         reason = (
             f"latest period end {winner.end.isoformat()}; latest filing {winner.filed.isoformat()}; "
-            f"amendment/restatement precedence applied; concept priority {concept_order[winner.concept] + 1}; "
-            f"unit priority {unit_order[winner.unit] + 1}; accession {winner.accession}"
+            f"amendment/restatement precedence applied; period-aware {semantics} selection; "
+            f"taxonomy {taxonomy or 'not supplied'}; "
+            f"concept {winner.concept}; unit {winner.unit}; form {winner.form}; "
+            f"accession {winner.accession or 'not supplied'}; filed {winner.filed.isoformat()}; "
+            f"start {start_text}; end {winner.end.isoformat()}; "
+            f"duration {duration_days if duration_days is not None else 'instant'} days; "
+            f"fiscal period {winner.fiscal_period or 'not supplied'}; frame {winner.frame or 'not supplied'}; "
+            f"concept priority {concept_order[winner.concept] + 1}; unit priority {unit_order[winner.unit] + 1}; "
+            "row-order-independent deterministic tie-breakers applied"
         )
         return ResearchValue(
             winner.value,
             source,
-            period=period if period != "latest" else winner.end.isoformat(),
+            period=winner.end.isoformat(),
             units=winner.unit,
             filing_date=winner.filed,
             availability=Availability.AVAILABLE,
             selection_reason=reason,
+            taxonomy=taxonomy,
+            concept=winner.concept,
+            accession=winner.accession or None,
+            form=winner.form,
+            start_date=winner.start,
+            end_date=winner.end,
+            fiscal_year=winner.fiscal_year,
+            fiscal_period=winner.fiscal_period,
+            frame=winner.frame,
+            duration_days=duration_days,
+            period_semantics=semantics,
+            period_mode=resolved_mode,
+            comparability_result=(
+                "current fact selected with explicit duration semantics"
+                if before_end is None else "prior fact matches taxonomy, unit, fiscal period and duration semantics"
+            ),
         )
+
+    @staticmethod
+    def _infer_period_mode(forms: frozenset[str] | None) -> str | None:
+        if forms and forms.issubset(SecFactSelector.QUARTERLY_FORMS):
+            return "quarterly"
+        if forms and forms.issubset(SecFactSelector.ANNUAL_FORMS):
+            return "annual"
+        return None
+
+    @classmethod
+    def period_semantics(
+        cls, item: SecFactCandidate, metric_type: str, period_mode: str | None,
+    ) -> tuple[str, int | None]:
+        if metric_type == "instant":
+            return ("instant", None) if item.start is None else ("duration_incompatible", cls._duration_days(item))
+        if item.start is None:
+            return "duration_unknown", None
+        duration_days = cls._duration_days(item)
+        frame = (item.frame or "").upper()
+        fp = (item.fiscal_period or "").upper()
+        if "YTD" in frame:
+            return "year_to_date", duration_days
+        if cls._QUARTER_FRAME.fullmatch(frame):
+            return "quarterly", duration_days
+        if re.search(r"Q[1-4]", frame):
+            return "quarterly" if 45 <= duration_days <= 140 else "year_to_date", duration_days
+        if cls._ANNUAL_FRAME.fullmatch(frame):
+            return ("annual" if 250 <= duration_days <= 430 else "annual_transition"), duration_days
+        if item.form in cls.QUARTERLY_FORMS or fp in {"Q1", "Q2", "Q3", "Q4"}:
+            return ("quarterly" if 45 <= duration_days <= 140 else "year_to_date"), duration_days
+        if item.form in cls.ANNUAL_FORMS and fp == "FY":
+            return ("annual" if 250 <= duration_days <= 430 else "duration_unknown"), duration_days
+        return "duration_unknown", duration_days
+
+    @staticmethod
+    def _duration_days(item: SecFactCandidate) -> int:
+        assert item.start is not None
+        return (item.end - item.start).days + 1
+
+    @classmethod
+    def _semantic_evidence(cls, item: SecFactCandidate, semantics: str, duration_days: int | None) -> int:
+        frame = (item.frame or "").upper()
+        fp = (item.fiscal_period or "").upper()
+        if semantics == "instant":
+            return 3
+        if semantics in {"annual", "annual_transition"} and cls._ANNUAL_FRAME.fullmatch(frame):
+            return 4
+        if semantics == "quarterly" and cls._QUARTER_FRAME.fullmatch(frame):
+            return 4
+        if semantics in {"annual", "annual_transition"} and fp == "FY":
+            return 3
+        if semantics == "quarterly" and fp in {"Q1", "Q2", "Q3", "Q4"}:
+            return 3
+        return 1 if duration_days is not None else 0
 
     def _candidate(self, concept: str, unit: str, row: object) -> SecFactCandidate | None:
         if not isinstance(row, dict) or row.get("form") not in self.ELIGIBLE_FORMS:
@@ -128,6 +269,8 @@ class SecFactSelector:
             start = date.fromisoformat(str(start_text)) if start_text else None
         except ValueError:
             start = None
+        if start is not None and start > end:
+            return None
         fy = row.get("fy")
         return SecFactCandidate(
             concept=concept,
@@ -258,6 +401,10 @@ class ResearchService:
         "us-gaap": frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A"}),
         "ifrs-full": frozenset({"20-F", "20-F/A", "40-F", "40-F/A"}),
     }
+    INSTANT_METRICS = frozenset({
+        "Assets", "Liabilities", "Equity", "Cash", "Debt", "Current assets",
+        "Current liabilities", "Inventory", "Shares outstanding",
+    })
 
     def __init__(self, client: SecCompanyFactsClient) -> None:
         self.client = client
@@ -307,8 +454,10 @@ class ResearchService:
         selected: dict[str, ResearchValue] = {}
         for name, (concepts, unit_kind) in mapping.items():
             units = self._units_for(unit_kind, currency)
+            metric_type = "instant" if name in self.INSTANT_METRICS else "duration"
             selected[name] = self.selector.select(
                 current_facts, concepts, units, forms=forms, source=source,
+                metric_type=metric_type, period_mode=period_mode, taxonomy=taxonomy,
             )
         selected["Revenue previous"] = self._previous(
             taxonomy_facts, mapping, "Revenue", selected["Revenue"], forms, source,
@@ -487,25 +636,37 @@ class ResearchService:
         forms: frozenset[str],
         source: str,
     ) -> ResearchValue:
-        if latest.availability is not Availability.AVAILABLE or not latest.period or not latest.units:
-            return ResearchValue.unavailable(source, "A latest comparable period with a stable unit was not selected.")
-        try:
-            latest_end = date.fromisoformat(latest.period)
-        except ValueError:
-            return ResearchValue.unavailable(source, "The selected filing period could not be compared.")
-        concepts, _kind = mapping[fact_name]
-        filtered: dict[str, Any] = {}
-        for concept in concepts:
-            node = facts.get(concept)
-            if not isinstance(node, dict):
-                continue
-            rows = node.get("units", {}).get(latest.units, []) if isinstance(node.get("units"), dict) else []
-            filtered[concept] = {"units": {latest.units: [
-                row for row in rows
-                if isinstance(row, dict) and isinstance(row.get("end"), str) and row["end"] < latest_end.isoformat()
-            ]}}
+        if (
+            latest.availability is not Availability.AVAILABLE
+            or not latest.units
+            or latest.end_date is None
+            or not latest.concept
+            or not latest.period_semantics
+        ):
+            return ResearchValue.unavailable(
+                source, "A latest fact with explicit taxonomy, unit and duration semantics was not selected."
+            )
+        node = facts.get(latest.concept)
+        if not isinstance(node, dict):
+            return ResearchValue.unavailable(source, "The selected current concept has no prior same-taxonomy facts.")
+        unit_rows = node.get("units", {})
+        rows = unit_rows.get(latest.units, []) if isinstance(unit_rows, dict) else []
+        filtered = {latest.concept: {"units": {latest.units: list(rows) if isinstance(rows, list) else []}}}
+        metric_type = "instant" if fact_name in self.INSTANT_METRICS else "duration"
         return self.selector.select(
-            filtered, concepts, (latest.units,), period="previous comparable filing period", forms=forms, source=source,
+            filtered,
+            (latest.concept,),
+            (latest.units,),
+            period="previous comparable filing period",
+            forms=forms,
+            source=source,
+            metric_type=metric_type,
+            period_mode=latest.period_mode,
+            taxonomy=latest.taxonomy,
+            before_end=latest.end_date,
+            required_fiscal_period=latest.fiscal_period,
+            required_period_semantics=latest.period_semantics,
+            comparable_duration_days=latest.duration_days,
         )
 
 def _first_string(value: object) -> str | None:
