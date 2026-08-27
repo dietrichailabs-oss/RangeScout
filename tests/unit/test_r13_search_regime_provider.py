@@ -215,7 +215,7 @@ def test_current_currency_wins_and_cross_currency_growth_is_unavailable() -> Non
     assert snapshot.sections["Growth"]["Revenue growth"].availability is Availability.NOT_AVAILABLE
 
 
-def test_latest_amendment_wins_and_missing_current_concept_stays_unavailable() -> None:
+def test_latest_partial_amendment_wins_per_metric_and_retains_unchanged_current_fact() -> None:
     original = monetary_taxonomy(
         "us-gaap", "USD", end="2025-12-31", filed="2026-02-01",
         form="10-K", fy=2025, accession="original", value=100,
@@ -228,9 +228,15 @@ def test_latest_amendment_wins_and_missing_current_concept_stays_unavailable() -
     for concept, node in amended.items():
         merged.setdefault(concept, {"units": {}})["units"].setdefault("USD", []).extend(node["units"]["USD"])
     snapshot = ResearchService(FixtureClient({"us-gaap": merged})).load("TEST")
-    assert snapshot.sections["Overview"]["Revenue"].availability is Availability.NOT_AVAILABLE
-    assert snapshot.sections["Overview"]["Net income"].value == Decimal(201)
-    assert "10-K/A" in snapshot.warnings[0]
+    revenue = snapshot.sections["Overview"]["Revenue"]
+    net_income = snapshot.sections["Overview"]["Net income"]
+    assert revenue.value == Decimal(100)
+    assert revenue.accession == "original"
+    assert revenue.form == "10-K"
+    assert net_income.value == Decimal(201)
+    assert net_income.accession == "amended"
+    assert net_income.form == "10-K/A"
+    assert "metric-level current provenance spans accessions: amended, original" in snapshot.warnings[0]
 
 
 @pytest.mark.parametrize(("canonical", "dash"), [

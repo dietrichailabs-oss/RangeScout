@@ -34,6 +34,7 @@ class ReportingRegime:
     filed: date
     form: str
     accession: str
+    filing_family: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +59,9 @@ class SecFactSelector:
     ANNUAL_FORMS = frozenset({"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"})
     QUARTERLY_FORMS = frozenset({"10-Q", "10-Q/A"})
     _ANNUAL_FRAME = re.compile(r"^CY\d{4}$", re.IGNORECASE)
+    _ANNUAL_FRAME_CAPTURE = re.compile(r"^CY(\d{4})$", re.IGNORECASE)
     _QUARTER_FRAME = re.compile(r"^CY\d{4}Q[1-4]$", re.IGNORECASE)
+    _QUARTER_FRAME_CAPTURE = re.compile(r"^CY(\d{4})Q([1-4])$", re.IGNORECASE)
 
     def select(
         self,
@@ -76,6 +79,9 @@ class SecFactSelector:
         required_fiscal_period: str | None = None,
         required_period_semantics: str | None = None,
         comparable_duration_days: int | None = None,
+        required_quarter_identity: str | None = None,
+        required_fiscal_year: int | None = None,
+        comparison_basis: str | None = None,
     ) -> ResearchValue:
         concept_order = {concept: index for index, concept in enumerate(concepts)}
         unit_order = {unit: index for index, unit in enumerate(units)}
@@ -123,6 +129,10 @@ class SecFactSelector:
             if required_period_semantics and semantics != required_period_semantics:
                 continue
             if required_fiscal_period and item.fiscal_period != required_fiscal_period:
+                continue
+            if required_quarter_identity and self.quarter_identity(item) != required_quarter_identity:
+                continue
+            if required_fiscal_year is not None and self.fiscal_year_identity(item) != required_fiscal_year:
                 continue
             if comparable_duration_days is not None:
                 if duration_days is None:
@@ -172,6 +182,7 @@ class SecFactSelector:
             f"start {start_text}; end {winner.end.isoformat()}; "
             f"duration {duration_days if duration_days is not None else 'instant'} days; "
             f"fiscal period {winner.fiscal_period or 'not supplied'}; frame {winner.frame or 'not supplied'}; "
+            f"comparison basis {comparison_basis or 'current-period selection'}; "
             f"concept priority {concept_order[winner.concept] + 1}; unit priority {unit_order[winner.unit] + 1}; "
             "row-order-independent deterministic tie-breakers applied"
         )
@@ -197,7 +208,10 @@ class SecFactSelector:
             period_mode=resolved_mode,
             comparability_result=(
                 "current fact selected with explicit duration semantics"
-                if before_end is None else "prior fact matches taxonomy, unit, fiscal period and duration semantics"
+                if before_end is None else (
+                    comparison_basis
+                    or "prior fact matches taxonomy, unit, fiscal period and duration semantics"
+                )
             ),
         )
 
@@ -227,12 +241,39 @@ class SecFactSelector:
         if re.search(r"Q[1-4]", frame):
             return "quarterly" if 45 <= duration_days <= 140 else "year_to_date", duration_days
         if cls._ANNUAL_FRAME.fullmatch(frame):
-            return ("annual" if 250 <= duration_days <= 430 else "annual_transition"), duration_days
+            if 250 <= duration_days <= 430:
+                return "annual", duration_days
+            if item.form in cls.ANNUAL_FORMS and fp in {"", "FY"} and 120 <= duration_days < 250:
+                return "annual_transition", duration_days
+            return "duration_unknown", duration_days
         if item.form in cls.QUARTERLY_FORMS or fp in {"Q1", "Q2", "Q3", "Q4"}:
             return ("quarterly" if 45 <= duration_days <= 140 else "year_to_date"), duration_days
         if item.form in cls.ANNUAL_FORMS and fp == "FY":
-            return ("annual" if 250 <= duration_days <= 430 else "duration_unknown"), duration_days
+            if 250 <= duration_days <= 430:
+                return "annual", duration_days
+            if 120 <= duration_days < 250:
+                return "annual_transition", duration_days
+            return "duration_unknown", duration_days
         return "duration_unknown", duration_days
+
+    @classmethod
+    def quarter_identity(cls, item: SecFactCandidate) -> str | None:
+        fiscal_period = (item.fiscal_period or "").upper()
+        fp_identity = fiscal_period if fiscal_period in {"Q1", "Q2", "Q3", "Q4"} else None
+        match = cls._QUARTER_FRAME_CAPTURE.fullmatch((item.frame or "").upper())
+        frame_identity = f"Q{match.group(2)}" if match else None
+        if fp_identity and frame_identity and fp_identity != frame_identity:
+            return None
+        return fp_identity or frame_identity
+
+    @classmethod
+    def fiscal_year_identity(cls, item: SecFactCandidate) -> int | None:
+        frame = (item.frame or "").upper()
+        match = cls._QUARTER_FRAME_CAPTURE.fullmatch(frame) or cls._ANNUAL_FRAME_CAPTURE.fullmatch(frame)
+        frame_year = int(match.group(1)) if match else None
+        if item.fiscal_year is not None and frame_year is not None and item.fiscal_year != frame_year:
+            return None
+        return item.fiscal_year if item.fiscal_year is not None else frame_year
 
     @staticmethod
     def _duration_days(item: SecFactCandidate) -> int:
@@ -459,6 +500,10 @@ class ResearchService:
                 current_facts, concepts, units, forms=forms, source=source,
                 metric_type=metric_type, period_mode=period_mode, taxonomy=taxonomy,
             )
+        current_accessions = sorted({
+            value.accession for value in selected.values()
+            if value.availability is Availability.AVAILABLE and value.accession
+        })
         selected["Revenue previous"] = self._previous(
             taxonomy_facts, mapping, "Revenue", selected["Revenue"], forms, source,
         )
@@ -467,12 +512,17 @@ class ResearchService:
         )
         regime_detail = (
             f"; current period: {regime.period.isoformat()}; filing: {regime.filed.isoformat()} "
-            f"{regime.form}; accession: {regime.accession or 'not supplied'}"
+            f"{regime.form}; accession: {regime.accession or 'not supplied'}; "
+            f"filing family: {regime.filing_family}"
             if regime is not None else "; no eligible current reporting regime"
+        )
+        provenance_detail = (
+            f"; metric-level current provenance spans accessions: {', '.join(current_accessions)}"
+            if len(current_accessions) > 1 else ""
         )
         warnings = (
             f"SEC taxonomy: {taxonomy}; reporting currency: {currency or 'not available'}"
-            f"{regime_detail}; no currency conversion performed.",
+            f"{regime_detail}{provenance_detail}; no currency conversion performed.",
         )
         return ResearchSnapshot(normalized, generation, profile, _build_sections(selected), now, warnings)
 
@@ -548,7 +598,12 @@ class ResearchService:
         currency = max(currencies, key=lambda value: (len(currencies[value]), value))
         return ReportingRegime(
             taxonomy, currency, period, data["filed"], form, str(data["accession"] or ""),
+            self._form_family(form),
         )
+
+    @staticmethod
+    def _form_family(form: str) -> str:
+        return form[:-2] if form.endswith("/A") else form
 
     @staticmethod
     def _reporting_currency(
@@ -607,10 +662,16 @@ class ResearchService:
                     for row in rows:
                         if not isinstance(row, dict) or str(row.get("end") or "") != regime.period.isoformat():
                             continue
-                        if regime.accession:
-                            if str(row.get("accn") or "") != regime.accession:
-                                continue
-                        elif str(row.get("filed") or "") != regime.filed.isoformat():
+                        row_form = str(row.get("form") or "")
+                        if row_form not in SecFactSelector.ELIGIBLE_FORMS:
+                            continue
+                        if ResearchService._form_family(row_form) != regime.filing_family:
+                            continue
+                        try:
+                            row_filed = date.fromisoformat(str(row.get("filed") or ""))
+                        except ValueError:
+                            continue
+                        if row_filed > regime.filed:
                             continue
                         kept.append(row)
                     if kept:
@@ -653,6 +714,29 @@ class ResearchService:
         rows = unit_rows.get(latest.units, []) if isinstance(unit_rows, dict) else []
         filtered = {latest.concept: {"units": {latest.units: list(rows) if isinstance(rows, list) else []}}}
         metric_type = "instant" if fact_name in self.INSTANT_METRICS else "duration"
+        required_fiscal_period = latest.fiscal_period
+        required_quarter_identity = None
+        current_fiscal_year = self._research_value_fiscal_year(latest)
+        required_fiscal_year = current_fiscal_year - 1 if current_fiscal_year is not None else None
+        comparison_basis = (
+            f"annual fiscal-year-over-year: fiscal year {required_fiscal_year} compared with "
+            f"fiscal year {current_fiscal_year}"
+            if current_fiscal_year is not None else "same-period prior comparable fact"
+        )
+        if latest.period_mode == "quarterly":
+            required_quarter_identity = self._research_value_quarter_identity(latest)
+            if required_quarter_identity is None or current_fiscal_year is None:
+                return ResearchValue.unavailable(
+                    source,
+                    "Quarterly year-over-year comparison requires a trustworthy fiscal quarter and fiscal year "
+                    "from SEC fp or frame metadata; RangeScout does not silently switch to QoQ.",
+                )
+            required_fiscal_period = None
+            required_fiscal_year = current_fiscal_year - 1
+            comparison_basis = (
+                f"quarterly year-over-year: {required_quarter_identity} fiscal year "
+                f"{required_fiscal_year} compared with fiscal year {current_fiscal_year}"
+            )
         return self.selector.select(
             filtered,
             (latest.concept,),
@@ -664,10 +748,35 @@ class ResearchService:
             period_mode=latest.period_mode,
             taxonomy=latest.taxonomy,
             before_end=latest.end_date,
-            required_fiscal_period=latest.fiscal_period,
+            required_fiscal_period=required_fiscal_period,
             required_period_semantics=latest.period_semantics,
             comparable_duration_days=latest.duration_days,
+            required_quarter_identity=required_quarter_identity,
+            required_fiscal_year=required_fiscal_year,
+            comparison_basis=comparison_basis,
         )
+
+    @staticmethod
+    def _research_value_quarter_identity(value: ResearchValue) -> str | None:
+        fiscal_period = (value.fiscal_period or "").upper()
+        fp_identity = fiscal_period if fiscal_period in {"Q1", "Q2", "Q3", "Q4"} else None
+        match = SecFactSelector._QUARTER_FRAME_CAPTURE.fullmatch((value.frame or "").upper())
+        frame_identity = f"Q{match.group(2)}" if match else None
+        if fp_identity and frame_identity and fp_identity != frame_identity:
+            return None
+        return fp_identity or frame_identity
+
+    @staticmethod
+    def _research_value_fiscal_year(value: ResearchValue) -> int | None:
+        frame = (value.frame or "").upper()
+        match = (
+            SecFactSelector._QUARTER_FRAME_CAPTURE.fullmatch(frame)
+            or SecFactSelector._ANNUAL_FRAME_CAPTURE.fullmatch(frame)
+        )
+        frame_year = int(match.group(1)) if match else None
+        if value.fiscal_year is not None and frame_year is not None and value.fiscal_year != frame_year:
+            return None
+        return value.fiscal_year if value.fiscal_year is not None else frame_year
 
 def _first_string(value: object) -> str | None:
     if isinstance(value, list):

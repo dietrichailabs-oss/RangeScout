@@ -8,7 +8,7 @@ class ProductIdentity:
     name: str = "RangeScout"
     company: str = "Dietrich AI Labs"
     version: str = "1.6.2"
-    build_identity: str = "rs-v1.6.2-conjunction-duration-r14"
+    build_identity: str = "rs-v1.6.2-amendment-transition-yoy-r15"
     publisher: str = "Dietrich AI Labs"
 
 
