@@ -138,17 +138,22 @@ def test_quarter_frame_does_not_override_implausible_duration() -> None:
     assert select_one(row, metric_type="duration", mode="quarterly").availability is Availability.NOT_AVAILABLE
 
 
-@pytest.mark.parametrize(("end", "frame", "metric_type", "mode", "form"), [
-    ("2025-05-01", "CY2025Q1", "duration", "quarterly", "10-Q"),
-    ("2025-08-01", "CY2025Q2", "duration", "quarterly", "10-Q"),
-    ("2026-02-01", "CY2025", "duration", "annual", "10-K"),
-    ("2025-08-01", "CY2025Q2I", "instant", "quarterly", "10-Q"),
+@pytest.mark.parametrize(("start", "end", "frame", "metric_type", "mode", "form"), [
+    ("2025-04-01", "2025-06-30", "CY2025Q1", "duration", "quarterly", "10-Q"),
+    ("2025-01-01", "2025-08-01", "CY2025Q2", "duration", "quarterly", "10-Q"),
+    ("2025-01-01", "2026-02-01", "CY2025", "duration", "annual", "10-K"),
+    (None, "2025-09-01", "CY2025Q2I", "instant", "quarterly", "10-Q"),
 ])
 def test_distant_frame_labels_fail_closed(
-    end: str, frame: str, metric_type: str, mode: str, form: str
+    start: str | None,
+    end: str,
+    frame: str,
+    metric_type: str,
+    mode: str,
+    form: str,
 ) -> None:
-    row = fact(10, start=None if metric_type == "instant" else "2025-01-01",
-               end=end, filed="2026-03-01", accession="distant", frame=frame, form=form)
+    row = fact(10, start=start, end=end, filed="2026-03-01",
+               accession="distant", frame=frame, form=form)
     assert select_one(row, metric_type=metric_type, mode=mode).availability is Availability.NOT_AVAILABLE
 
 

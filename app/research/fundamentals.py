@@ -64,7 +64,6 @@ class SecFactSelector:
     _QUARTER_FRAME_CAPTURE = re.compile(r"^CY(\d{4})Q([1-4])$", re.IGNORECASE)
     _YTD_FRAME_CAPTURE = re.compile(r"^CY(\d{4})Q([1-4])YTD$", re.IGNORECASE)
     _INSTANT_FRAME_CAPTURE = re.compile(r"^CY(\d{4})(?:Q([1-4]))?I$", re.IGNORECASE)
-    _FRAME_BOUNDARY_TOLERANCE_DAYS = 14
 
     def select(
         self,
@@ -329,35 +328,69 @@ class SecFactSelector:
                 return None
         frame_year = int(match.group(1))
         frame_quarter = int(match.group(2))
-        if not cls._end_matches_nominal_boundary(item.end, frame_year, frame_quarter):
+        if not cls.frame_matches_economic_period(item, semantics):
             return None
         return f"Q{frame_quarter}", frame_year, "calendar_frame_fallback"
 
     @classmethod
     def frame_matches_economic_period(cls, item: SecFactCandidate, semantics: str) -> bool:
-        """Validate SEC best-aligned calendar frames against nominal boundaries."""
+        """Validate frames using SEC-compatible deterministic best alignment.
+
+        A complete fiscal identity remains authoritative for comparison, while
+        frame syntax, semantic class, and obvious adjacent-period errors are
+        still validated. A duration frame must uniquely minimize the combined
+        start/end distance among itself and adjacent periods. Frame-only
+        fallback additionally uses the SEC duration bands. Instant frames use
+        the nearest nominal boundary, with ties rejected.
+        """
         frame = (item.frame or "").upper()
         if not frame:
             return True
         quarter = cls._QUARTER_FRAME_CAPTURE.fullmatch(frame)
         if quarter:
-            return semantics == "quarterly" and cls._end_matches_nominal_boundary(
-                item.end, int(quarter.group(1)), int(quarter.group(2))
+            if semantics != "quarterly":
+                return False
+            duration_days = cls._duration_days(item) if item.start is not None else None
+            return (
+                duration_days is not None
+                and (
+                    cls._has_complete_fiscal_identity(item, semantics)
+                    or 61 <= duration_days <= 121
+                )
+                and cls._duration_frame_is_unique_best(
+                    item.start,
+                    item.end,
+                    cls._adjacent_quarter_periods(int(quarter.group(1)), int(quarter.group(2))),
+                )
             )
         annual = cls._ANNUAL_FRAME_CAPTURE.fullmatch(frame)
         if annual:
-            return semantics in {"annual", "annual_transition"} and cls._end_matches_nominal_boundary(
-                item.end, int(annual.group(1)), None
+            if semantics not in {"annual", "annual_transition"}:
+                return False
+            duration_days = cls._duration_days(item) if item.start is not None else None
+            return (
+                duration_days is not None
+                and (
+                    cls._has_complete_fiscal_identity(item, semantics)
+                    or 335 <= duration_days <= 395
+                )
+                and cls._duration_frame_is_unique_best(
+                    item.start,
+                    item.end,
+                    cls._adjacent_annual_periods(int(annual.group(1))),
+                )
             )
         ytd = cls._YTD_FRAME_CAPTURE.fullmatch(frame)
         if ytd:
-            return semantics == "year_to_date" and cls._end_matches_nominal_boundary(
-                item.end, int(ytd.group(1)), int(ytd.group(2))
+            return semantics == "year_to_date" and cls._duration_frame_is_unique_best(
+                item.start,
+                item.end,
+                cls._adjacent_ytd_periods(int(ytd.group(1)), int(ytd.group(2))),
             )
         instant = cls._INSTANT_FRAME_CAPTURE.fullmatch(frame)
         if instant:
             quarter_number = instant.group(2)
-            return semantics == "instant" and cls._end_matches_nominal_boundary(
+            return semantics == "instant" and cls._instant_frame_is_unique_best(
                 item.end,
                 int(instant.group(1)),
                 int(quarter_number) if quarter_number is not None else None,
@@ -365,23 +398,111 @@ class SecFactSelector:
         return False
 
     @classmethod
-    def _end_matches_nominal_boundary(
+    def _has_complete_fiscal_identity(
         cls,
+        item: SecFactCandidate,
+        semantics: str,
+    ) -> bool:
+        fiscal_period = (item.fiscal_period or "").strip().upper()
+        if item.fiscal_year is None:
+            return False
+        if semantics == "quarterly":
+            return fiscal_period in {"Q1", "Q2", "Q3", "Q4"}
+        if semantics in {"annual", "annual_transition"}:
+            return fiscal_period == "FY"
+        return False
+
+    @staticmethod
+    def _duration_frame_is_unique_best(
+        start: date | None,
         end: date,
+        periods: tuple[tuple[date, date], tuple[date, date], tuple[date, date]],
+    ) -> bool:
+        if start is None or end < start:
+            return False
+        scores = tuple(
+            abs((start - nominal_start).days) + abs((end - nominal_end).days)
+            for nominal_start, nominal_end in periods
+        )
+        supplied_score = scores[1]
+        return scores.count(supplied_score) == 1 and supplied_score == min(scores)
+
+    @classmethod
+    def _instant_frame_is_unique_best(
+        cls,
+        instant: date,
         frame_year: int,
         frame_quarter: int | None,
     ) -> bool:
         if frame_quarter is None:
-            nominal_end = date(frame_year, 12, 31)
+            boundaries = tuple(date(year, 12, 31) for year in (frame_year - 1, frame_year, frame_year + 1))
         else:
-            month, day = {
-                1: (3, 31),
-                2: (6, 30),
-                3: (9, 30),
-                4: (12, 31),
-            }[frame_quarter]
-            nominal_end = date(frame_year, month, day)
-        return abs((end - nominal_end).days) <= cls._FRAME_BOUNDARY_TOLERANCE_DAYS
+            boundaries = tuple(
+                cls._quarter_period(year, quarter)[1]
+                for year, quarter in cls._adjacent_quarter_identities(frame_year, frame_quarter)
+            )
+        scores = tuple(abs((instant - boundary).days) for boundary in boundaries)
+        supplied_score = scores[1]
+        return scores.count(supplied_score) == 1 and supplied_score == min(scores)
+
+    @classmethod
+    def _adjacent_quarter_periods(
+        cls,
+        frame_year: int,
+        frame_quarter: int,
+    ) -> tuple[tuple[date, date], tuple[date, date], tuple[date, date]]:
+        previous, supplied, following = cls._adjacent_quarter_identities(frame_year, frame_quarter)
+        return (
+            cls._quarter_period(*previous),
+            cls._quarter_period(*supplied),
+            cls._quarter_period(*following),
+        )
+
+    @staticmethod
+    def _adjacent_quarter_identities(
+        frame_year: int,
+        frame_quarter: int,
+    ) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+        previous = (frame_year - 1, 4) if frame_quarter == 1 else (frame_year, frame_quarter - 1)
+        following = (frame_year + 1, 1) if frame_quarter == 4 else (frame_year, frame_quarter + 1)
+        return previous, (frame_year, frame_quarter), following
+
+    @staticmethod
+    def _quarter_period(frame_year: int, frame_quarter: int) -> tuple[date, date]:
+        start_month = 1 + (frame_quarter - 1) * 3
+        end_month, end_day = {
+            1: (3, 31),
+            2: (6, 30),
+            3: (9, 30),
+            4: (12, 31),
+        }[frame_quarter]
+        return date(frame_year, start_month, 1), date(frame_year, end_month, end_day)
+
+    @staticmethod
+    def _adjacent_annual_periods(
+        frame_year: int,
+    ) -> tuple[tuple[date, date], tuple[date, date], tuple[date, date]]:
+        previous_year = frame_year - 1
+        following_year = frame_year + 1
+        return (
+            (date(previous_year, 1, 1), date(previous_year, 12, 31)),
+            (date(frame_year, 1, 1), date(frame_year, 12, 31)),
+            (date(following_year, 1, 1), date(following_year, 12, 31)),
+        )
+
+    @classmethod
+    def _adjacent_ytd_periods(
+        cls,
+        frame_year: int,
+        frame_quarter: int,
+    ) -> tuple[tuple[date, date], tuple[date, date], tuple[date, date]]:
+        previous, supplied, following = cls._adjacent_quarter_identities(frame_year, frame_quarter)
+
+        def ytd_period(identity: tuple[int, int]) -> tuple[date, date]:
+            year, quarter = identity
+            return date(year, 1, 1), cls._quarter_period(year, quarter)[1]
+
+        return ytd_period(previous), ytd_period(supplied), ytd_period(following)
 
     @staticmethod
     def _duration_days(item: SecFactCandidate) -> int:
@@ -903,9 +1024,17 @@ class ResearchService:
                 return None
         frame_year = int(match.group(1))
         frame_quarter = int(match.group(2))
-        if not SecFactSelector._end_matches_nominal_boundary(
-            value.end_date, frame_year, frame_quarter
-        ):
+        if value.period_semantics == "instant":
+            aligned = SecFactSelector._instant_frame_is_unique_best(
+                value.end_date, frame_year, frame_quarter
+            )
+        else:
+            aligned = SecFactSelector._duration_frame_is_unique_best(
+                value.start_date,
+                value.end_date,
+                SecFactSelector._adjacent_quarter_periods(frame_year, frame_quarter),
+            )
+        if not aligned:
             return None
         return f"Q{frame_quarter}", frame_year, "calendar_frame_fallback"
 
