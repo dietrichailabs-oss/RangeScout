@@ -262,3 +262,14 @@ RangeScout application source is MIT licensed. Bundled third-party components re
   <strong>RangeScout</strong><br>
   Built by <strong>Dietrich AI Labs</strong>
 </p>
+
+---
+
+## Official Links
+
+- [Official website](https://www.dietrichailabs.com/)
+- [Product page](https://www.dietrichailabs.com/rangescout.html)
+- [Download center](https://www.dietrichailabs.com/downloads.html)
+- Support: [dietrichailabs@gmail.com](mailto:dietrichailabs@gmail.com)
+
+DietrichAILabs.com is the official product, download, documentation, checksum, release-information, status, and guides hub. GitHub provides source repositories, issues, development history, and release mirrors where applicable.
