@@ -1,0 +1,74 @@
+{
+  "schema": "rangescout.r18-final-installer-evidence-review.v1",
+  "bundle": {
+    "uploaded_filename": "04aa9ae0-5fda-43ed-90b7-7dcd0846bc00.zip",
+    "bytes": 7461031,
+    "sha256": "A5B7D98026757E1930D807FBB13AD52BB21D8D8BABDC662131629B973BB41103",
+    "entries": 36,
+    "crc_failure": null,
+    "path_traversal": [],
+    "symlinks": [],
+    "duplicate_names": [],
+    "case_collisions": [],
+    "payload_manifest_rows": 35,
+    "payload_manifest_mismatches": 0
+  },
+  "artifact_identity": {
+    "source_or_binary_modified": false,
+    "r19_created": false,
+    "engineering_commit": "cada372574ff12dcc285912587de364b860f1fda",
+    "engineering_tree": "e539e08ef77433a2ecbec2bd8406fe77dbc1efae",
+    "installer_sha256": "5B0A5822ED09004405BA0BEEA6C5473BF77E283DDA7BBBF622D07C15B888D52D",
+    "installed_executable_sha256": "FE4E4C06C47C3FD8E616438355DE4301C95F526D8C4B5A906E0E6541E2D9EAF5",
+    "previous_supported_installer_sha256": "83E377C4D409BDC16BD2A650F0488012BD2D4B450F88DD949A1B15CA14355497"
+  },
+  "pass_run3": {
+    "decision": "INSTALLER GATE PASS",
+    "target_kind": "Windows Sandbox disposable VM",
+    "windows_caption": "Windows 10 Enterprise",
+    "windows_version": "24H2",
+    "windows_build": "26100",
+    "architecture": "AMD64",
+    "start_local": "2026-08-28T19:21:34.7074969-04:00",
+    "stop_local": "2026-08-28T19:23:31.8910667-04:00",
+    "elapsed_seconds": 117.184,
+    "installed_file_count": 219,
+    "clean_install_exit_code": 0,
+    "clean_smoke_window_observed": true,
+    "clean_smoke_symbol": "AAPL",
+    "clean_uninstall_exit_code": 0,
+    "prior_1_6_1_install_exit_code": 0,
+    "upgrade_to_r18_exit_code": 0,
+    "install_location_preserved": true,
+    "settings_sha256_before_upgrade": "19A31EE5B4AC4C7A25781FB7634C3AF3FC3387E4546530F14F3AFAC55E59EF15",
+    "settings_sha256_after_installer": "19A31EE5B4AC4C7A25781FB7634C3AF3FC3387E4546530F14F3AFAC55E59EF15",
+    "user_sentinel_sha256_before_upgrade": "B12303EAD585FFCA907333396F1B5130AB4E4EBDC74E592B7EC1AC86EE3A51F5",
+    "user_sentinel_sha256_after_installer": "B12303EAD585FFCA907333396F1B5130AB4E4EBDC74E592B7EC1AC86EE3A51F5",
+    "theme_after_r18_launch": "dark",
+    "final_uninstall_exit_code": 0,
+    "install_location_removed": true,
+    "uninstall_registry_removed": true,
+    "product_registry_removed": true,
+    "shortcuts_removed": true,
+    "appdata_preserved": true,
+    "outside_scope_preserved": true,
+    "user_export_preserved": true,
+    "failures": []
+  },
+  "native_log_review": {
+    "final_uninstallation_process_succeeded": true,
+    "removed_all_yes": true,
+    "restart_required": false
+  },
+  "screenshot_review": {
+    "clean_r18_market_AAPL": "observed",
+    "prior_1_6_1_market_AAPL": "observed",
+    "upgraded_r18_settings_AAPL_dark_theme": "observed"
+  },
+  "inconclusive_attempts": {
+    "run1": "Stopped before installer execution due Windows Sandbox CIM access denied",
+    "run2": "Installer ran but harness only watched launcher process and did not observe child GUI; no product verdict",
+    "run3_harness_change": "Window detection changed to inspect actual RangeScout process; product source and installer unchanged"
+  },
+  "review_result": "PASS"
+}

@@ -1,0 +1,59 @@
+{
+  "schema": "rangescout.r18-final-independent-qa-summary.v1",
+  "verdict": "PASS",
+  "release_gate_closed": true,
+  "r19_required": false,
+  "candidate": {
+    "repository": "dietrichailabs-oss/RangeScout",
+    "engineering_branch": "codex/v1.6.2-r18-sec-best-alignment",
+    "engineering_commit": "cada372574ff12dcc285912587de364b860f1fda",
+    "engineering_tree": "e539e08ef77433a2ecbec2bd8406fe77dbc1efae",
+    "build": "rs-v1.6.2-sec-best-alignment-r18",
+    "handoff_filename": "RangeScout_1.6.2_R18_Engineering_Master_QA_Handoff.zip",
+    "handoff_bytes": 90282168,
+    "handoff_sha256": "E2154557D23CE896065AE3EF47A231353B56BADBA1B0344276B5DB3958EDC50D"
+  },
+  "installer": {
+    "filename": "RangeScout_1.6.2_Setup.exe",
+    "bytes": 36932361,
+    "sha256": "5B0A5822ED09004405BA0BEEA6C5473BF77E283DDA7BBBF622D07C15B888D52D",
+    "installed_executable_sha256": "FE4E4C06C47C3FD8E616438355DE4301C95F526D8C4B5A906E0E6541E2D9EAF5"
+  },
+  "installer_gate": {
+    "decision": "INSTALLER GATE PASS",
+    "target_kind": "Windows Sandbox disposable VM",
+    "windows": "Windows Enterprise 24H2 build 26100 AMD64",
+    "run_start_et": "2026-08-28T19:21:34.7074969-04:00",
+    "run_stop_et": "2026-08-28T19:23:31.8910667-04:00",
+    "elapsed_seconds": 117.184,
+    "clean_install": true,
+    "installed_build_verified": true,
+    "launch_search_open_exit_smoke": true,
+    "supported_1_6_1_upgrade": true,
+    "settings_preserved_or_migrated": true,
+    "uninstall_cleanup": true,
+    "user_data_preserved": true,
+    "outside_scope_preserved": true,
+    "restart_required": false
+  },
+  "evidence_bundle": {
+    "uploaded_filename": "04aa9ae0-5fda-43ed-90b7-7dcd0846bc00.zip",
+    "bytes": 7461031,
+    "sha256": "A5B7D98026757E1930D807FBB13AD52BB21D8D8BABDC662131629B973BB41103",
+    "entries": 36,
+    "crc": "PASS",
+    "evidence_manifest": "35/35 verified"
+  },
+  "prior_independent_qa": {
+    "r18_source_package_assertions_passed": 237,
+    "r18_product_failures": 0,
+    "r18_skipped": 7,
+    "fresh_instrument_sample": "50/50 PASS",
+    "conditional_pass_commit": "da9895fdcb0f1a1b392aba4c10aa499df1a093b0"
+  },
+  "final_review": {
+    "intake_et": "2026-08-28T19:32:00-04:00",
+    "intake_precision": "minute",
+    "decision_freeze_et": "2026-08-28T19:35:09.362749-04:00"
+  }
+}
