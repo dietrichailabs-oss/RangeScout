@@ -1,0 +1,68 @@
+{
+  "schema": "rangescout.r18-independent-qa-evidence.v1",
+  "candidate_integrity": {
+    "outer_bytes": 90282168,
+    "outer_sha256": "E2154557D23CE896065AE3EF47A231353B56BADBA1B0344276B5DB3958EDC50D",
+    "outer_entries": 44,
+    "crc": "PASS",
+    "path_traversal": 0,
+    "symlinks": 0,
+    "duplicate_names": 0,
+    "case_collisions": 0,
+    "content_manifest": "43/43 verified"
+  },
+  "artifacts": {
+    "installer": {
+      "bytes": 36932361,
+      "sha256": "5B0A5822ED09004405BA0BEEA6C5473BF77E283DDA7BBBF622D07C15B888D52D"
+    },
+    "portable_zip": {
+      "bytes": 50921675,
+      "sha256": "390BD424C0BCB245E13390A93E98AFBF641B850955D17903AE8102E74D2B3295"
+    },
+    "source_zip": {
+      "bytes": 13525761,
+      "sha256": "FBA16A51A2F0FB474D87C3E4A39F858491C134C0F1FA3FB2ADD116272A0EE078",
+      "entries": 356,
+      "crc": "PASS"
+    },
+    "portable_executable": {
+      "bytes": 3323566,
+      "sha256": "FE4E4C06C47C3FD8E616438355DE4301C95F526D8C4B5A906E0E6541E2D9EAF5",
+      "mz_header": true
+    }
+  },
+  "github_binding": {
+    "repository": "dietrichailabs-oss/RangeScout",
+    "branch": "codex/v1.6.2-r18-sec-best-alignment",
+    "commit": "cada372574ff12dcc285912587de364b860f1fda",
+    "tree": "e539e08ef77433a2ecbec2bd8406fe77dbc1efae",
+    "remote_fetch": "PASS",
+    "changed_file_blob_binding": {
+      "app/__init__.py": "9f83e18c3d71875932925e4d83f4ea4a94aafdab",
+      "app/research/fundamentals.py": "d0fb983206dc08e8d1f7b36079c78e5401c7c822",
+      "tests/unit/test_r17_sec_frame_identity.py": "9dd748ca10056ed32cb0461021c83e2bf0247162",
+      "tests/unit/test_r18_sec_best_alignment.py": "27a2c98bec61d26139663643fcfd75b7375eb2bc",
+      "tests/unit/test_release_engineering.py": "fe048effe6dd37bc7bf7deeff5184200a68c260d"
+    },
+    "line_ending_note": "Four exact Source ZIP files use CRLF packaging line endings; normalizing CRLF to LF reproduces the remote Git blob identities. The new R18 test file already matches raw bytes."
+  },
+  "independent_test_runs": [
+    {"scope": "R18+R17+R16 SEC", "passed": 65, "failed": 0, "skipped": 0},
+    {"scope": "R15+SEC core+R14", "passed": 64, "failed": 0, "skipped": 0},
+    {"scope": "R13/R12/R11/R10", "passed": 77, "failed": 0, "skipped": 0},
+    {"scope": "release/package/artifact", "passed": 12, "failed": 0, "skipped": 3},
+    {"scope": "persistence/active-symbol/watchlist/integration", "passed": 12, "failed": 0, "skipped": 1},
+    {"scope": "runnable system-tray slice", "passed": 7, "failed": 0, "skipped": 3}
+  ],
+  "environment_limits": [
+    "PySide6 not installed in QA container for selected UI/Windows imports",
+    "one installer-safety test assumes a generated release/dist tree that is not part of the clean Source ZIP"
+  ],
+  "engineering_supporting_evidence": {
+    "full_repository": "813 passed / 3 skipped / 0 failed",
+    "exact_source_zip": "813 passed / 3 skipped / 0 failed",
+    "engineering_fresh_120": "PASS",
+    "destructive_installer": "PENDING_DISPOSABLE_WINDOWS_TARGET"
+  }
+}

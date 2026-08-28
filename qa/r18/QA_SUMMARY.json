@@ -1,0 +1,48 @@
+{
+  "schema": "rangescout.r18-independent-qa-summary.v1",
+  "verdict": "CONDITIONAL PASS",
+  "release_ready_unconditionally": false,
+  "condition": "Destructive native Windows installer install/upgrade/uninstall lifecycle validation on a disposable Windows target",
+  "qa_start_et": "2026-08-28T18:28:00-04:00",
+  "qa_start_precision_note": "Conversation clock exposed the intake start to minute precision only.",
+  "qa_decision_freeze_et": "2026-08-28T18:39:27.402-04:00",
+  "candidate": {
+    "intended_filename": "RangeScout_1.6.2_R18_Engineering_Master_QA_Handoff.zip",
+    "uploaded_filename": "a300e06e-6626-45da-b751-e57d283b8b2e.zip",
+    "bytes": 90282168,
+    "sha256": "E2154557D23CE896065AE3EF47A231353B56BADBA1B0344276B5DB3958EDC50D",
+    "version": "1.6.2",
+    "build": "rs-v1.6.2-sec-best-align-r18"
+  },
+  "github": {
+    "repository": "dietrichailabs-oss/RangeScout",
+    "engineering_branch": "codex/v1.6.2-r18-sec-best-alignment",
+    "commit": "cada372574ff12dcc285912587de364b860f1fda",
+    "tree": "e539e08ef77433a2ecbec2bd8406fe77dbc1efae",
+    "remote_binding": "PASS"
+  },
+  "integrity": {
+    "outer_zip": "PASS",
+    "content_manifest": "43/43 verified",
+    "source_zip": "PASS",
+    "portable_executable_binding": "PASS"
+  },
+  "independent_automated_tests": {
+    "passed": 237,
+    "product_assertion_failures": 0,
+    "skipped": 7,
+    "environment_limited": [
+      "PySide6 unavailable for selected UI/Windows imports in QA container",
+      "clean Source ZIP intentionally lacks pre-generated release/dist tree required by one installer-safety test precondition"
+    ]
+  },
+  "independent_fresh_instrument_sample": {
+    "count": 50,
+    "passed": 50,
+    "failed": 0,
+    "excluded_engineering_r18_120": true
+  },
+  "sec_r17_blocker": "CLOSED_BY_R18",
+  "r19_authorized": false,
+  "next_gate": "Native Windows installer lifecycle on disposable target"
+}

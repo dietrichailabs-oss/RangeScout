@@ -1,0 +1,45 @@
+{
+  "schema": "rangescout.r18-independent-qa-fresh-50.v1",
+  "result": "PASS",
+  "passed": 50,
+  "failed": 0,
+  "excluded_engineering_r18_120": true,
+  "categories": {
+    "equity": 6,
+    "preferred": 6,
+    "adr": 6,
+    "etf": 6,
+    "closed_end_fund": 6,
+    "warrant": 6,
+    "right": 6,
+    "unit": 6,
+    "etn": 1,
+    "index": 1
+  },
+  "symbols": [
+    "KNGRF", "RBOTW", "RF-PE", "CECO", "POCI", "CGTX",
+    "GOODN", "NHPAP", "FBIOP", "ATLCP", "AGNCN", "COF$J",
+    "SPHXF", "AWTRF", "DPDSY", "DSRNY", "SDMHF", "PDC",
+    "GEVC", "HELS", "FBUF", "MVFG", "MFMO", "ESIM",
+    "HYT", "IQI", "ABAKF", "BXSL", "EVG", "NPCT",
+    "PBMWW", "NXGLW", "DFDVW", "ESLAW", "SOUNW", "VEEAW",
+    "LAFAR", "DTSQR", "SUMAR", "CRAQR", "CTAAR", "IBACR",
+    "BSM", "XCBEU", "CGCFU", "CEF", "NPACU", "FSHPU",
+    "CEFD", "^GSPC"
+  ],
+  "checks_per_case": [
+    "canonical exact ticker ranks first",
+    "official full name discovers canonical instrument",
+    "meaningful partial name discovers canonical instrument",
+    "Research routing executes",
+    "capability states valid",
+    "Active Symbol propagation preserves canonical identity metadata",
+    "stale request rejected after active symbol change"
+  ],
+  "route_counts": {
+    "corporate": 19,
+    "fund": 13,
+    "market_instrument": 18
+  },
+  "query_note": "Acceptance uses meaningful user-like partial-name queries. Naive mechanically truncated strings were not treated as product failures when they removed distinguishing semantics or became intentionally ambiguous."
+}
