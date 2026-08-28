@@ -219,7 +219,7 @@ def quarterly_payload(*, include_fp: bool, include_frame: bool, include_prior: b
     return {"us-gaap": {"RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": rows}}}}
 
 
-@pytest.mark.parametrize(("include_fp", "include_frame"), [(True, True), (False, True), (True, False)])
+@pytest.mark.parametrize(("include_fp", "include_frame"), [(True, True), (True, False)])
 def test_quarterly_growth_is_stable_same_quarter_yoy(include_fp: bool, include_frame: bool) -> None:
     result = snapshot(quarterly_payload(include_fp=include_fp, include_frame=include_frame), mode="quarterly")
     growth = result.sections["Growth"]["Revenue growth"]
