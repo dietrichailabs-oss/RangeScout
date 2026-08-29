@@ -6,7 +6,7 @@
   <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/dietrichailabs-oss/RangeScout?style=for-the-badge"></a>
   <img alt="Windows" src="https://img.shields.io/badge/Windows-Desktop-0078D4?style=for-the-badge&logo=windows11&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776AB?style=for-the-badge&logo=python&logoColor=white">
-  <img alt="Market Data" src="https://img.shields.io/badge/Market%20Data-Yahoo%20%2B%20Finnhub-0F766E?style=for-the-badge">
+  <img alt="Market Data" src="https://img.shields.io/badge/Market%20Data-Multi--Provider-0F766E?style=for-the-badge">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2563EB?style=for-the-badge"></a>
 </p>
 
@@ -26,6 +26,35 @@
   &nbsp;&nbsp;•&nbsp;&nbsp;
   <a href="https://github.com/dietrichailabs-oss/RangeScout/issues"><strong>Report an Issue</strong></a>
 </p>
+
+---
+
+## Market data & integrations
+
+RangeScout uses a capability-aware multi-provider fabric rather than treating one service as authoritative for every symbol and feature. Provider-specific symbol mapping, availability, entitlements, latency, rate limits, and instrument coverage can differ. Unsupported combinations remain visibly unavailable instead of being silently substituted or fabricated.
+
+### Market data providers
+
+| Provider | RangeScout use | Key required? |
+| --- | --- | --- |
+| **Yahoo Finance** | Quotes and historical bars | No user-entered key |
+| **Finnhub** | Supported live trade streaming and entitled analyst/recommendation data | **Yes** |
+| **Coinbase Exchange** | Public crypto market data | No |
+| **Kraken** | Public crypto market data | No |
+| **CoinPaprika** | Public crypto reference and market data | No |
+| **Twelve Data** | Optional provider-fabric market data | **Yes** |
+| **Alpha Vantage** | Optional market data and supported analyst/estimate data | **Yes** |
+
+### Research, macro & integrations
+
+| Service | RangeScout use | Key required? |
+| --- | --- | --- |
+| **SEC EDGAR** | Filings, issuer mapping, submissions metadata, and XBRL fundamentals | No |
+| **FRED** | Optional macroeconomic series and context | **Yes** |
+| **Congress.gov** | Optional legislative catalyst data | **Yes, if enabled** |
+| **Nasdaq Trader** | Trading halt/resume and official listing/discovery context | No |
+| **White House** | Government and policy catalyst publications | No |
+| **Logo.dev** | Optional Active Symbol company logos | **Yes** |
 
 ---
 
@@ -227,14 +256,17 @@ If the desktop does not provide a usable system tray, RangeScout closes normally
 
 ## Free accounts & API keys
 
-RangeScout works with public/free data sources, but a few enhanced features use your own free API key.
+RangeScout works with public/free data sources, while some enhanced features use your own free or eligible provider key.
 
 | Service | Used for | Key required? | Official setup |
 | --- | --- | --- | --- |
-| **Yahoo** | Quotes and historical bars | No user-entered key | Built in |
+| **Yahoo Finance** | Quotes and historical bars | No user-entered key | Built in |
 | **Finnhub** | Supported live trade streaming and entitled recommendation trends | **Yes** | [Create account](https://finnhub.io/register) · [Pricing](https://finnhub.io/pricing) |
-| **Alpha Vantage** | Optional `EARNINGS_ESTIMATES` analyst outlook | **Yes** | [Request API key](https://www.alphavantage.co/support/#api-key) |
+| **Coinbase Exchange** | Public crypto market data | No | [Official API](https://docs.cdp.coinbase.com/exchange/docs/welcome) |
+| **Kraken** | Public crypto market data | No | [Official API](https://docs.kraken.com/api/) |
+| **CoinPaprika** | Public crypto reference and market data | No | [Official API](https://api.coinpaprika.com/) |
 | **Twelve Data** | Optional provider-fabric market data | **Yes** | [Official site](https://twelvedata.com/) |
+| **Alpha Vantage** | Optional market data and `EARNINGS_ESTIMATES` analyst outlook | **Yes** | [Request API key](https://www.alphavantage.co/support/#api-key) |
 | **FRED** | Optional macro-series context | **Yes** | [Request API key](https://fred.stlouisfed.org/docs/api/api_key.html) |
 | **SEC EDGAR** | Filings and XBRL fundamentals | No | [SEC API docs](https://www.sec.gov/search-filings/edgar-application-programming-interfaces) · [data.sec.gov](https://data.sec.gov/) |
 | **Congress.gov** | Optional legislative catalyst source | **Yes, if enabled** | [Request API key](https://api.congress.gov/sign-up) |
