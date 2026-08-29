@@ -55,7 +55,72 @@
 
 ## What's new in RangeScout 1.6.2
 
-RangeScout 1.6.2 preserves the 1.6.1 quote-priority lane and prior 1.6.2 corrections while adding canonical market-instrument resolution, versioned capability/provider mappings, ranked disambiguating search, immediate identity-bound selection loading, instrument-type-aware Research states, and bounded catalyst relevance tiers. Missing provider data remains explicit and no value is fabricated.
+RangeScout 1.6.2 is a much larger release than the point-version number suggests. From the exact 1.6.1 baseline to the final R18 source candidate, the release accumulated 36 source-control commits covering the Market experience, canonical instrument identity and discovery, provider routing, Research semantics, SEC filing selection, persistence, migrations, and release hardening. The goal throughout the release was deterministic identity and data selection: the symbol, security type, reporting period, provider route, and displayed value should stay coherent even when upstream data is incomplete or ambiguous.
+
+### Market, Active Symbol, and data presentation
+
+- **Fused quote/history presentation** — current quote state and historical context are combined more carefully so a stale or slower history response cannot overwrite the more current visible quote state.
+- **Immediate identity-bound transitions** — committing a new Active Symbol clears stale symbol-specific state first, then loads the new canonical identity before asynchronous Market, Research, analyst, catalyst, and logo work can repopulate the UI.
+- **Stale-result rejection** — background results are checked against the active request/symbol before presentation so a late result for the previous symbol cannot bleed into the newly selected instrument.
+- **Clearer status and formatting** — provider provenance, availability, cached/delayed/offline states, quote movement, and unsupported data remain explicit rather than being silently substituted.
+- **Reserved visible-quote priority preserved** — the 1.6.1 quote-priority lane remains intact so slower history, Research, scanner, news, logo, and other background work cannot starve the quote path the user is actively looking at.
+- **Alert and catalyst presentation cleanup** — user-facing alert/catalyst formatting and correlation were tightened so symbol-specific context stays attached to the correct Active Symbol while broad-market events remain distinguishable.
+
+### Canonical instrument identity, search, and discovery
+
+- **Canonical instrument intelligence layer** — RangeScout now resolves a stable internal identity before routing an instrument into Market, Research, providers, and the rest of the workstation.
+- **Exact ticker precedence** — exact canonical ticker matches outrank legacy aliases and looser name matches, preventing aliases from stealing an exact symbol selection.
+- **Ranked disambiguating search** — symbol and company-name search uses deterministic ranking rather than relying on raw row order.
+- **Better punctuation/name normalization** — search indexes punctuation-preserved, punctuation-separated, and punctuation-deleted name forms so names containing punctuation remain discoverable without creating loose accidental matches.
+- **Conjunction-aware matching** — multi-token company searches require meaningful token agreement instead of allowing a single common word to dominate the result.
+- **Historical issuer aliases preserved safely** — unique historical names and aliases remain searchable while current canonical identity stays authoritative.
+- **Broader security-type semantics** — discovery/classification was hardened across supported equities and non-common-equity instruments, including preferreds, ADRs, ETFs, closed-end funds, warrants, rights, units, ETNs, indices, partnerships, and related issuer structures.
+- **Issuer-aware classification** — security type is no longer inferred from a single superficial suffix or label when issuer structure or official listing evidence says otherwise.
+- **Stable discovery reconciliation** — official discovery refreshes merge into the existing catalog without casually destroying identity, aliases, listing history, or newer local state.
+- **Fail-closed official-source refreshes** — incomplete or obviously truncated official discovery inputs are rejected rather than being treated as a legitimate delisting/removal event.
+- **Idempotent schema recovery** — database migration/recovery work was hardened so repeating recovery does not keep mutating an already-correct catalog.
+
+### Provider symbol routing and capability behavior
+
+- **Canonical-to-provider symbol mapping** — provider adapters receive the provider-specific representation of the selected canonical instrument instead of assuming every provider accepts the same raw symbol text.
+- **Full-catalog routing corrections** — symbol routing was exercised across the broader instrument catalog, not only ordinary common-stock tickers.
+- **Streaming pair safety** — canonical pair identities are kept separate from raw provider subscription strings so internal identity does not leak into an incompatible streaming request format.
+- **Versioned classification/capability data** — instrument classification and provider capability decisions are backed by versioned local reference data rather than ad-hoc UI guesses.
+- **Explicit unsupported states** — if the selected instrument/provider combination cannot legitimately provide a requested capability, RangeScout reports that state instead of fabricating a route or a value.
+
+### Research routing and instrument-aware behavior
+
+- **Research now routes by instrument semantics** — corporate issuers, funds, and other market instruments take different Research paths rather than every ticker being treated as an operating company.
+- **Fund-aware Research path** — fund/closed-end-fund style instruments can surface appropriate supported context without being forced through corporate SEC metrics that do not apply.
+- **Preferred, partnership, LLC-unit, and related issuer semantics** — Research classification was corrected so legal/security structure does not accidentally masquerade as common equity.
+- **IFRS-aware fundamentals** — reporting-regime selection and compatible taxonomy/unit handling were hardened for issuers that report under IFRS as well as US GAAP.
+- **Current reporting regime selection** — older filings in a different taxonomy, currency, or reporting regime no longer automatically override the issuer's coherent current regime.
+- **Unsupported Research remains explicit** — cards use clear unavailable/N/A states when a legitimate comparable fact does not exist; RangeScout does not manufacture a value to fill the screen.
+
+### SEC fiscal periods, amendments, and growth calculations
+
+- **Deterministic duration semantics** — quarterly, year-to-date, annual, annual-transition, and instant facts are kept distinct instead of being treated as interchangeable SEC rows.
+- **Quarter/YTD and annual/Q4 separation** — duration and fiscal-period rules prevent year-to-date data from masquerading as a quarter and prevent a fourth-quarter identity from silently replacing an annual period.
+- **Per-metric amendment/restatement merging** — amended filings are reconciled at the metric level so a partial amendment does not erase valid untouched metrics from the original filing.
+- **Stable quarterly growth comparisons** — current/prior-period selection is row-order independent and uses coherent period identity before calculating growth.
+- **Fiscal and calendar identity separated** — SEC `frame` metadata is no longer treated as if it were the issuer's fiscal quarter/year identity.
+- **Atomic fiscal identity** — `fy` and `fp` are used as one coherent fiscal pair; a missing fiscal component is not silently filled with a calendar-frame component to create an identity that never existed.
+- **Safe frame-only fallback** — when both fiscal identity fields are absent, a valid compatible SEC frame can provide a clearly labeled calendar fallback rather than being hybridized with partial fiscal metadata.
+- **SEC best-alignment frame handling** — frame validation uses deterministic start/end alignment against adjacent calendar periods rather than an arbitrary fixed calendar-boundary cutoff.
+- **Off-calendar issuers supported correctly** — valid fiscal quarters ending around dates such as April 30, July 31, October 31, and January 31 can remain comparable when their SEC calendar frame is the best aligned period.
+- **52/53-week reporters supported** — valid periods ending several days around nominal quarter/year boundaries, including July 4 and January 3 style cases, are no longer rejected merely because the raw end date is not the literal calendar boundary.
+- **Wrong adjacent frames still fail closed** — the broader alignment logic does not simply disable validation; malformed frames, annual/quarter mismatches, ambiguous ties, and clearly wrong adjacent-period frames remain rejectable.
+
+### Persistence, lifecycle, and release reliability
+
+- **Historical-store migrations expanded through the 1.6.2 schema line** — new identity/classification/search state has explicit migrations rather than depending on a clean database.
+- **Notes and local state preservation hardened** — existing user-owned data remains attached to the correct symbol identity as the catalog evolves.
+- **Clean reference seeding/startup work** — initial instrument/reference seeding was made deterministic and kept within the startup performance gate.
+- **Installer upgrade path verified** — the supported 1.6.1 → 1.6.2 in-place upgrade preserves the install location, settings, and user AppData while replacing the runtime with the exact 1.6.2 build.
+- **Uninstall scope verified** — normal uninstall removes RangeScout-owned install files, shortcuts, and product registry state while preserving user AppData/exports and leaving out-of-scope files untouched.
+- **Regression coverage greatly expanded** — deterministic tests were added for discovery safety, reconciliation, provider symbol routing, security classification, search normalization, IFRS/unit semantics, SEC durations, amendments, fiscal/calendar identity, off-calendar frames, row-order independence, packaging, and installer behavior.
+
+Across all of these changes, RangeScout keeps the same core rule: missing, unsupported, stale, or ambiguous upstream data must remain visible as such. It does not fabricate market, Research, analyst, or catalyst values to make the interface look complete.
 
 ## Preserved 1.6.0 provider platform
 
