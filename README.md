@@ -10,7 +10,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2563EB?style=for-the-badge"></a>
 </p>
 
-<h1 align="center">RangeScout 1.6.2 Engineering Candidate</h1>
+<h1 align="center">RangeScout 1.6.2</h1>
 
 <p align="center">
   <strong>A Windows market intelligence workstation from Dietrich AI Labs.</strong><br>
@@ -19,11 +19,8 @@
 
 <p align="center"><strong>Publisher/company: Dietrich AI Labs</strong></p>
 
-> [!WARNING]
-> RangeScout 1.6.2 is an Engineering → Independent QA candidate and is not publicly released or approved. The download link below remains the frozen public release.
-
 <p align="center">
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.2.0_Windows.zip"><strong>⬇ Download for Windows</strong></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.2_Windows.zip"><strong>⬇ Download for Windows</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
   <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest"><strong>Release Notes</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
@@ -56,7 +53,7 @@
 
 ---
 
-## What's new in the 1.6.2 engineering candidate
+## What's new in RangeScout 1.6.2
 
 RangeScout 1.6.2 preserves the 1.6.1 quote-priority lane and prior 1.6.2 corrections while adding canonical market-instrument resolution, versioned capability/provider mappings, ranked disambiguating search, immediate identity-bound selection loading, instrument-type-aware Research states, and bounded catalyst relevance tiers. Missing provider data remains explicit and no value is fabricated.
 
@@ -135,13 +132,13 @@ The preserved 1.3 foundation includes:
 
 The recommended public download is:
 
-**[RangeScout_1.2.0_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.2.0_Windows.zip)**
+**[RangeScout_1.6.2_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.2_Windows.zip)**
 
-**Embedded installer SHA-256:** `cecb6d59d555a55a1a15812ad3c381cf5b27e1263c7076ad88377af71ccaf37f`
+**Embedded installer SHA-256:** `5B0A5822ED09004405BA0BEEA6C5473BF77E283DDA7BBBF622D07C15B888D52D`
 
-1. Download `RangeScout_1.2.0_Windows.zip` from the latest release.
+1. Download `RangeScout_1.6.2_Windows.zip` from the latest release.
 2. Extract the ZIP.
-3. Run `RangeScout_1.2.0_Setup.exe` and follow the Windows prompts.
+3. Run `RangeScout_1.6.2_Setup.exe` and follow the Windows prompts.
 4. Windows may display a reputation or security warning because the installer is not publicly trusted-signed.
 5. If desired, verify the public ZIP SHA-256 published in the release notes and the embedded installer SHA-256 above.
 6. Launch RangeScout from the Start menu or desktop shortcut, then add optional provider credentials under **Settings → Data Providers**.

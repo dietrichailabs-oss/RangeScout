@@ -134,10 +134,22 @@ class SecFactSelector:
                 continue
             if required_fiscal_period and item.fiscal_period != required_fiscal_period:
                 continue
-            if required_quarter_identity and self.quarter_identity(item) != required_quarter_identity:
-                continue
-            if required_fiscal_year is not None and self.fiscal_year_identity(item) != required_fiscal_year:
-                continue
+            if resolved_mode == "quarterly" and (
+                required_quarter_identity or required_fiscal_year is not None
+            ):
+                identity = self.coherent_quarterly_identity(item, semantics)
+                if identity is None:
+                    continue
+                quarter_identity, year_identity, _provenance = identity
+                if required_quarter_identity and quarter_identity != required_quarter_identity:
+                    continue
+                if required_fiscal_year is not None and year_identity != required_fiscal_year:
+                    continue
+            else:
+                if required_quarter_identity and self.quarter_identity(item) != required_quarter_identity:
+                    continue
+                if required_fiscal_year is not None and self.fiscal_year_identity(item) != required_fiscal_year:
+                    continue
             if comparable_duration_days is not None:
                 if duration_days is None:
                     continue
@@ -239,9 +251,17 @@ class SecFactSelector:
         frame = (item.frame or "").upper()
         fp = (item.fiscal_period or "").upper()
         if "YTD" in frame:
-            return "year_to_date", duration_days
+            return (
+                ("year_to_date", duration_days)
+                if 45 <= duration_days < 360
+                else ("duration_unknown", duration_days)
+            )
         if cls._QUARTER_FRAME.fullmatch(frame):
-            return "quarterly", duration_days
+            return (
+                ("quarterly", duration_days)
+                if 45 <= duration_days <= 140
+                else ("duration_unknown", duration_days)
+            )
         if re.search(r"Q[1-4]", frame):
             return "quarterly" if 45 <= duration_days <= 140 else "year_to_date", duration_days
         if cls._ANNUAL_FRAME.fullmatch(frame):
@@ -276,40 +296,213 @@ class SecFactSelector:
         return item.fiscal_year if item.fiscal_year is not None else frame_year
 
     @classmethod
+    def coherent_quarterly_identity(
+        cls,
+        item: SecFactCandidate,
+        semantics: str,
+    ) -> tuple[str, int, str] | None:
+        """Return one coherent fiscal pair or one coherent calendar-frame fallback."""
+        fiscal_period_text = (item.fiscal_period or "").strip().upper()
+        fiscal_quarter = (
+            fiscal_period_text
+            if fiscal_period_text in {"Q1", "Q2", "Q3", "Q4"}
+            else None
+        )
+        fiscal_year = item.fiscal_year
+        fiscal_period_supplied = bool(fiscal_period_text)
+        fiscal_year_supplied = fiscal_year is not None
+
+        if fiscal_quarter is not None and fiscal_year_supplied:
+            return fiscal_quarter, fiscal_year, "fiscal"
+        if fiscal_period_supplied or fiscal_year_supplied:
+            return None
+
+        frame = (item.frame or "").upper()
+        if semantics == "instant":
+            match = cls._INSTANT_FRAME_CAPTURE.fullmatch(frame)
+            if match is None or match.group(2) is None:
+                return None
+        else:
+            match = cls._QUARTER_FRAME_CAPTURE.fullmatch(frame)
+            if match is None:
+                return None
+        frame_year = int(match.group(1))
+        frame_quarter = int(match.group(2))
+        if not cls.frame_matches_economic_period(item, semantics):
+            return None
+        return f"Q{frame_quarter}", frame_year, "calendar_frame_fallback"
+
+    @classmethod
     def frame_matches_economic_period(cls, item: SecFactCandidate, semantics: str) -> bool:
-        """Validate calendar frame alignment without equating it to filer fiscal identity."""
+        """Validate frames using SEC-compatible deterministic best alignment.
+
+        A complete fiscal identity remains authoritative for comparison, while
+        frame syntax, semantic class, and obvious adjacent-period errors are
+        still validated. A duration frame must uniquely minimize the combined
+        start/end distance among itself and adjacent periods. Frame-only
+        fallback additionally uses the SEC duration bands. Instant frames use
+        the nearest nominal boundary, with ties rejected.
+        """
         frame = (item.frame or "").upper()
         if not frame:
             return True
         quarter = cls._QUARTER_FRAME_CAPTURE.fullmatch(frame)
         if quarter:
+            if semantics != "quarterly":
+                return False
+            duration_days = cls._duration_days(item) if item.start is not None else None
             return (
-                semantics == "quarterly"
-                and int(quarter.group(1)) == item.end.year
-                and int(quarter.group(2)) == ((item.end.month - 1) // 3) + 1
+                duration_days is not None
+                and (
+                    cls._has_complete_fiscal_identity(item, semantics)
+                    or 61 <= duration_days <= 121
+                )
+                and cls._duration_frame_is_unique_best(
+                    item.start,
+                    item.end,
+                    cls._adjacent_quarter_periods(int(quarter.group(1)), int(quarter.group(2))),
+                )
             )
         annual = cls._ANNUAL_FRAME_CAPTURE.fullmatch(frame)
         if annual:
-            return semantics in {"annual", "annual_transition"} and int(annual.group(1)) == item.end.year
+            if semantics not in {"annual", "annual_transition"}:
+                return False
+            duration_days = cls._duration_days(item) if item.start is not None else None
+            return (
+                duration_days is not None
+                and (
+                    cls._has_complete_fiscal_identity(item, semantics)
+                    or 335 <= duration_days <= 395
+                )
+                and cls._duration_frame_is_unique_best(
+                    item.start,
+                    item.end,
+                    cls._adjacent_annual_periods(int(annual.group(1))),
+                )
+            )
         ytd = cls._YTD_FRAME_CAPTURE.fullmatch(frame)
         if ytd:
-            return (
-                semantics == "year_to_date"
-                and int(ytd.group(1)) == item.end.year
-                and int(ytd.group(2)) == ((item.end.month - 1) // 3) + 1
+            return semantics == "year_to_date" and cls._duration_frame_is_unique_best(
+                item.start,
+                item.end,
+                cls._adjacent_ytd_periods(int(ytd.group(1)), int(ytd.group(2))),
             )
         instant = cls._INSTANT_FRAME_CAPTURE.fullmatch(frame)
         if instant:
             quarter_number = instant.group(2)
-            return (
-                semantics == "instant"
-                and int(instant.group(1)) == item.end.year
-                and (
-                    quarter_number is None
-                    or int(quarter_number) == ((item.end.month - 1) // 3) + 1
-                )
+            return semantics == "instant" and cls._instant_frame_is_unique_best(
+                item.end,
+                int(instant.group(1)),
+                int(quarter_number) if quarter_number is not None else None,
             )
         return False
+
+    @classmethod
+    def _has_complete_fiscal_identity(
+        cls,
+        item: SecFactCandidate,
+        semantics: str,
+    ) -> bool:
+        fiscal_period = (item.fiscal_period or "").strip().upper()
+        if item.fiscal_year is None:
+            return False
+        if semantics == "quarterly":
+            return fiscal_period in {"Q1", "Q2", "Q3", "Q4"}
+        if semantics in {"annual", "annual_transition"}:
+            return fiscal_period == "FY"
+        return False
+
+    @staticmethod
+    def _duration_frame_is_unique_best(
+        start: date | None,
+        end: date,
+        periods: tuple[tuple[date, date], tuple[date, date], tuple[date, date]],
+    ) -> bool:
+        if start is None or end < start:
+            return False
+        scores = tuple(
+            abs((start - nominal_start).days) + abs((end - nominal_end).days)
+            for nominal_start, nominal_end in periods
+        )
+        supplied_score = scores[1]
+        return scores.count(supplied_score) == 1 and supplied_score == min(scores)
+
+    @classmethod
+    def _instant_frame_is_unique_best(
+        cls,
+        instant: date,
+        frame_year: int,
+        frame_quarter: int | None,
+    ) -> bool:
+        if frame_quarter is None:
+            boundaries = tuple(date(year, 12, 31) for year in (frame_year - 1, frame_year, frame_year + 1))
+        else:
+            boundaries = tuple(
+                cls._quarter_period(year, quarter)[1]
+                for year, quarter in cls._adjacent_quarter_identities(frame_year, frame_quarter)
+            )
+        scores = tuple(abs((instant - boundary).days) for boundary in boundaries)
+        supplied_score = scores[1]
+        return scores.count(supplied_score) == 1 and supplied_score == min(scores)
+
+    @classmethod
+    def _adjacent_quarter_periods(
+        cls,
+        frame_year: int,
+        frame_quarter: int,
+    ) -> tuple[tuple[date, date], tuple[date, date], tuple[date, date]]:
+        previous, supplied, following = cls._adjacent_quarter_identities(frame_year, frame_quarter)
+        return (
+            cls._quarter_period(*previous),
+            cls._quarter_period(*supplied),
+            cls._quarter_period(*following),
+        )
+
+    @staticmethod
+    def _adjacent_quarter_identities(
+        frame_year: int,
+        frame_quarter: int,
+    ) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+        previous = (frame_year - 1, 4) if frame_quarter == 1 else (frame_year, frame_quarter - 1)
+        following = (frame_year + 1, 1) if frame_quarter == 4 else (frame_year, frame_quarter + 1)
+        return previous, (frame_year, frame_quarter), following
+
+    @staticmethod
+    def _quarter_period(frame_year: int, frame_quarter: int) -> tuple[date, date]:
+        start_month = 1 + (frame_quarter - 1) * 3
+        end_month, end_day = {
+            1: (3, 31),
+            2: (6, 30),
+            3: (9, 30),
+            4: (12, 31),
+        }[frame_quarter]
+        return date(frame_year, start_month, 1), date(frame_year, end_month, end_day)
+
+    @staticmethod
+    def _adjacent_annual_periods(
+        frame_year: int,
+    ) -> tuple[tuple[date, date], tuple[date, date], tuple[date, date]]:
+        previous_year = frame_year - 1
+        following_year = frame_year + 1
+        return (
+            (date(previous_year, 1, 1), date(previous_year, 12, 31)),
+            (date(frame_year, 1, 1), date(frame_year, 12, 31)),
+            (date(following_year, 1, 1), date(following_year, 12, 31)),
+        )
+
+    @classmethod
+    def _adjacent_ytd_periods(
+        cls,
+        frame_year: int,
+        frame_quarter: int,
+    ) -> tuple[tuple[date, date], tuple[date, date], tuple[date, date]]:
+        previous, supplied, following = cls._adjacent_quarter_identities(frame_year, frame_quarter)
+
+        def ytd_period(identity: tuple[int, int]) -> tuple[date, date]:
+            year, quarter = identity
+            return date(year, 1, 1), cls._quarter_period(year, quarter)[1]
+
+        return ytd_period(previous), ytd_period(supplied), ytd_period(following)
 
     @staticmethod
     def _duration_days(item: SecFactCandidate) -> int:
@@ -760,26 +953,28 @@ class ResearchService:
             if current_fiscal_year is not None else "same-period prior comparable fact"
         )
         if latest.period_mode == "quarterly":
-            required_quarter_identity = self._research_value_quarter_identity(latest)
-            if required_quarter_identity is None or current_fiscal_year is None:
+            current_identity = self._research_value_coherent_quarterly_identity(latest)
+            if current_identity is None:
                 return ResearchValue.unavailable(
                     source,
-                    "Quarterly year-over-year comparison requires a trustworthy fiscal quarter and fiscal year "
-                    "from SEC fp or frame metadata; RangeScout does not silently switch to QoQ.",
+                    "Quarterly year-over-year comparison requires either a complete SEC fiscal fy/fp pair "
+                    "or a complete date-compatible SEC calendar frame; partial fiscal identity is not mixed "
+                    "with calendar-frame identity.",
                 )
+            required_quarter_identity, current_fiscal_year, identity_provenance = current_identity
             required_fiscal_period = None
             required_fiscal_year = current_fiscal_year - 1
-            fiscal_quarter_supplied = (latest.fiscal_period or "").upper() in {"Q1", "Q2", "Q3", "Q4"}
-            fiscal_year_supplied = latest.fiscal_year is not None
-            comparison_basis = (
-                f"quarterly year-over-year: {required_quarter_identity} fiscal year "
-                f"{required_fiscal_year} compared with fiscal year {current_fiscal_year}"
-            )
-            if not (fiscal_quarter_supplied and fiscal_year_supplied):
-                quarter_source = "SEC fiscal fp" if fiscal_quarter_supplied else "SEC calendar frame"
-                year_source = "SEC fiscal fy" if fiscal_year_supplied else "SEC calendar frame"
-                comparison_basis += (
-                    f"; quarter identity from {quarter_source}; year identity from {year_source}"
+            if identity_provenance == "fiscal":
+                comparison_basis = (
+                    f"quarterly year-over-year: {required_quarter_identity} fiscal year "
+                    f"{required_fiscal_year} compared with fiscal year {current_fiscal_year}"
+                )
+            else:
+                comparison_basis = (
+                    f"quarterly calendar year-over-year fallback: {required_quarter_identity} calendar year "
+                    f"{required_fiscal_year} compared with calendar year {current_fiscal_year}; "
+                    "coherent calendar fallback from SEC frame, not filer fiscal identity; "
+                    "quarter identity from SEC calendar frame; year identity from SEC calendar frame"
                 )
         return self.selector.select(
             filtered,
@@ -801,12 +996,47 @@ class ResearchService:
         )
 
     @staticmethod
-    def _research_value_quarter_identity(value: ResearchValue) -> str | None:
-        fiscal_period = (value.fiscal_period or "").upper()
-        fp_identity = fiscal_period if fiscal_period in {"Q1", "Q2", "Q3", "Q4"} else None
-        match = SecFactSelector._QUARTER_FRAME_CAPTURE.fullmatch((value.frame or "").upper())
-        frame_identity = f"Q{match.group(2)}" if match else None
-        return fp_identity or frame_identity
+    def _research_value_coherent_quarterly_identity(
+        value: ResearchValue,
+    ) -> tuple[str, int, str] | None:
+        fiscal_period_text = (value.fiscal_period or "").strip().upper()
+        fiscal_quarter = (
+            fiscal_period_text
+            if fiscal_period_text in {"Q1", "Q2", "Q3", "Q4"}
+            else None
+        )
+        fiscal_year = value.fiscal_year
+        fiscal_period_supplied = bool(fiscal_period_text)
+        fiscal_year_supplied = fiscal_year is not None
+        if fiscal_quarter is not None and fiscal_year_supplied:
+            return fiscal_quarter, fiscal_year, "fiscal"
+        if fiscal_period_supplied or fiscal_year_supplied or value.end_date is None:
+            return None
+
+        frame = (value.frame or "").upper()
+        if value.period_semantics == "instant":
+            match = SecFactSelector._INSTANT_FRAME_CAPTURE.fullmatch(frame)
+            if match is None or match.group(2) is None:
+                return None
+        else:
+            match = SecFactSelector._QUARTER_FRAME_CAPTURE.fullmatch(frame)
+            if match is None:
+                return None
+        frame_year = int(match.group(1))
+        frame_quarter = int(match.group(2))
+        if value.period_semantics == "instant":
+            aligned = SecFactSelector._instant_frame_is_unique_best(
+                value.end_date, frame_year, frame_quarter
+            )
+        else:
+            aligned = SecFactSelector._duration_frame_is_unique_best(
+                value.start_date,
+                value.end_date,
+                SecFactSelector._adjacent_quarter_periods(frame_year, frame_quarter),
+            )
+        if not aligned:
+            return None
+        return f"Q{frame_quarter}", frame_year, "calendar_frame_fallback"
 
     @staticmethod
     def _research_value_fiscal_year(value: ResearchValue) -> int | None:

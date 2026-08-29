@@ -8,7 +8,7 @@ class ProductIdentity:
     name: str = "RangeScout"
     company: str = "Dietrich AI Labs"
     version: str = "1.6.2"
-    build_identity: str = "rs-v1.6.2-fiscal-calendar-r16"
+    build_identity: str = "rs-v1.6.2-sec-best-alignment-r18"
     publisher: str = "Dietrich AI Labs"
 
 
