@@ -10,7 +10,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2563EB?style=for-the-badge"></a>
 </p>
 
-<h1 align="center">RangeScout 1.6.2</h1>
+<h1 align="center">RangeScout 1.6.3 Watchlist Hotfix Candidate</h1>
 
 <p align="center">
   <strong>A Windows market intelligence workstation from Dietrich AI Labs.</strong><br>
@@ -19,13 +19,60 @@
 
 <p align="center"><strong>Publisher/company: Dietrich AI Labs</strong></p>
 
+> [!NOTE]
+> **RangeScout 1.6.2 remains the current public release.** The 1.6.3 watchlist hotfix candidate has passed Independent QA and is pending explicit merge/release authorization. No public 1.6.3 package has been published yet.
+
 <p align="center">
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.2_Windows.zip"><strong>⬇ Download for Windows</strong></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.2_Windows.zip"><strong>⬇ Download current public release</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
   <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest"><strong>Release Notes</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
   <a href="https://github.com/dietrichailabs-oss/RangeScout/issues"><strong>Report an Issue</strong></a>
 </p>
+
+---
+
+## RangeScout 1.6.3 watchlist hotfix — Independent QA PASS
+
+RangeScout 1.6.3 is a narrowly scoped post-release correction for watchlist selection and Active Symbol watchlist workflows. The exact Engineering candidate on `codex/v1.6.3-watchlist-hotfix` passed the scoped Independent QA gate and remains unpublished pending release authorization.
+
+### Watchlist selection and editing
+
+- **Selected watchlist is now authoritative** — choosing a watchlist persists that exact list as the current target for subsequent watchlist actions.
+- **Single-symbol Add/Remove stays single-symbol** — selecting a watchlist no longer fills the symbol editor with the list's entire comma-separated membership.
+- **Add Symbol targets exactly one list and one symbol** — input is normalized and validated before one canonical symbol is added to the selected watchlist.
+- **Remove Symbol is equally scoped** — one validated symbol is removed only from the selected watchlist.
+- **Duplicate adds remain idempotent** — adding a symbol that is already watched does not create duplicate membership or duplicate rows.
+- **Invalid operations are visible** — missing watchlists, malformed multi-symbol input, or unsupported symbol text produce a clear warning instead of silently doing nothing.
+
+### Active Symbol quick-add
+
+- **Visible `Add to Watchlist` action** — the Market Active Symbol area now exposes a clear one-click watchlist action.
+- **Current selection is respected** — quick-add uses the persisted selected watchlist rather than blindly targeting the first list.
+- **Deterministic fallback** — when watchlists exist but no valid selection is persisted, RangeScout selects a deterministic existing target and remembers it.
+- **Automatic first-list creation** — if no watchlist exists, quick-add creates `my-watchlist` / `My Watchlist` and adds the current Active Symbol.
+- **Watched state updates immediately** — the action changes to `✓ Watchlisted` when the current Active Symbol already belongs to the selected list and recomputes when Active Symbol changes.
+
+### Dependent workstation refresh
+
+Watchlist mutations now refresh the related workstation state coherently:
+
+- Watchlists surface and symbol table
+- ticker ribbon and watchlist title
+- runtime/watchlist subscription universe
+- scanner watchlist filtering/context
+- watched-state presentation for the Active Symbol
+
+### QA identity
+
+- Engineering commit: `ae98a55f6afed24b4a9fc9982dacb8ef07de8b20`
+- Engineering tree: `d06e235b972d03272c47b5aa3bed54dfaa17783a`
+- Build: `rs-v1.6.3-watchlist-hotfix-eng1`
+- Independent QA commit: `bfb3002dfdd9aaae9427fdc29aa92b2d3078feda`
+- Independent QA verdict: **PASS**
+- Tracking: [GitHub Issue #3](https://github.com/dietrichailabs-oss/RangeScout/issues/3)
+
+The published RangeScout 1.6.2 binaries and release assets were not modified by this hotfix QA cycle.
 
 ---
 
@@ -224,13 +271,13 @@ The preserved 1.3 foundation includes:
 
 ## Download & install
 
-The recommended public download is:
+The recommended public download is still RangeScout 1.6.2 until the 1.6.3 hotfix receives explicit release authorization:
 
 **[RangeScout_1.6.2_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.2_Windows.zip)**
 
-**Embedded installer SHA-256:** `5B0A5822ED09004405BA0BEEA6C5473BF77E283DDA7BBBF622D07C15B888D52D`
+**Embedded 1.6.2 installer SHA-256:** `5B0A5822ED09004405BA0BEEA6C5473BF77E283DDA7BBBF622D07C15B888D52D`
 
-1. Download `RangeScout_1.6.2_Windows.zip` from the latest release.
+1. Download `RangeScout_1.6.2_Windows.zip` from the latest public release.
 2. Extract the ZIP.
 3. Run `RangeScout_1.6.2_Setup.exe` and follow the Windows prompts.
 4. Windows may display a reputation or security warning because the installer is not publicly trusted-signed.
