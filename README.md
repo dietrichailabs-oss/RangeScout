@@ -10,7 +10,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2563EB?style=for-the-badge"></a>
 </p>
 
-<h1 align="center">RangeScout 1.6.3 Watchlist Hotfix Candidate</h1>
+<h1 align="center">RangeScout 1.6.3</h1>
 
 <p align="center">
   <strong>A Windows market intelligence workstation from Dietrich AI Labs.</strong><br>
@@ -20,21 +20,21 @@
 <p align="center"><strong>Publisher/company: Dietrich AI Labs</strong></p>
 
 > [!NOTE]
-> **RangeScout 1.6.2 remains the current public release.** The 1.6.3 watchlist hotfix candidate has passed Independent QA and is pending explicit merge/release authorization. No public 1.6.3 package has been published yet.
+> **RangeScout 1.6.3 is the current public Windows release.** It includes the Independent-QA-passed watchlist reliability hotfix for selected-list targeting, single-symbol Add/Remove, Active Symbol quick-add, watched-state updates, and dependent ticker/runtime/scanner refresh behavior.
 
 <p align="center">
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.2_Windows.zip"><strong>⬇ Download current public release</strong></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.3_Windows.zip"><strong>⬇ Download RangeScout 1.6.3 for Windows</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest"><strong>Release Notes</strong></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.3"><strong>Release Notes</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
   <a href="https://github.com/dietrichailabs-oss/RangeScout/issues"><strong>Report an Issue</strong></a>
 </p>
 
 ---
 
-## RangeScout 1.6.3 watchlist hotfix — Independent QA PASS
+## What's new in RangeScout 1.6.3
 
-RangeScout 1.6.3 is a narrowly scoped post-release correction for watchlist selection and Active Symbol watchlist workflows. The exact Engineering candidate on `codex/v1.6.3-watchlist-hotfix` passed the scoped Independent QA gate and remains unpublished pending release authorization.
+RangeScout 1.6.3 is a narrowly scoped post-release correction for watchlist selection and Active Symbol watchlist workflows. The exact Engineering candidate on `codex/v1.6.3-watchlist-hotfix` passed the scoped Independent QA gate and is now the current public release.
 
 ### Watchlist selection and editing
 
@@ -63,7 +63,7 @@ Watchlist mutations now refresh the related workstation state coherently:
 - scanner watchlist filtering/context
 - watched-state presentation for the Active Symbol
 
-### QA identity
+### Release and QA identity
 
 - Engineering commit: `ae98a55f6afed24b4a9fc9982dacb8ef07de8b20`
 - Engineering tree: `d06e235b972d03272c47b5aa3bed54dfaa17783a`
@@ -71,8 +71,9 @@ Watchlist mutations now refresh the related workstation state coherently:
 - Independent QA commit: `bfb3002dfdd9aaae9427fdc29aa92b2d3078feda`
 - Independent QA verdict: **PASS**
 - Tracking: [GitHub Issue #3](https://github.com/dietrichailabs-oss/RangeScout/issues/3)
+- Public release: [RangeScout 1.6.3](https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.3)
 
-The published RangeScout 1.6.2 binaries and release assets were not modified by this hotfix QA cycle.
+RangeScout 1.6.3 was published as a new release; the prior RangeScout 1.6.2 release assets remain unchanged for historical integrity.
 
 ---
 
@@ -271,17 +272,26 @@ The preserved 1.3 foundation includes:
 
 ## Download & install
 
-The recommended public download is still RangeScout 1.6.2 until the 1.6.3 hotfix receives explicit release authorization:
+The recommended public download is RangeScout 1.6.3:
 
-**[RangeScout_1.6.2_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.2_Windows.zip)**
+**[RangeScout_1.6.3_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.3_Windows.zip)**
 
-**Embedded 1.6.2 installer SHA-256:** `5B0A5822ED09004405BA0BEEA6C5473BF77E283DDA7BBBF622D07C15B888D52D`
+**Windows ZIP SHA-256:** `2417F8ECE087539DF3798742C1EB6BFFDEEEB543057715E0B0D92632BEE01F8E`
 
-1. Download `RangeScout_1.6.2_Windows.zip` from the latest public release.
+**Embedded 1.6.3 installer SHA-256:** `11271C0F14D22C732455E8C6B99DFC80539A6B11D7A7E8CAC54180653FD22FD7`
+
+The ZIP contains:
+
+- `RangeScout_1.6.3_Setup.exe`
+- `README.md`
+- `SIGNING_INFORMATION.md`
+- `SIGNING_VERIFICATION.txt`
+
+1. Download `RangeScout_1.6.3_Windows.zip` from the latest public release.
 2. Extract the ZIP.
-3. Run `RangeScout_1.6.2_Setup.exe` and follow the Windows prompts.
+3. Run `RangeScout_1.6.3_Setup.exe` and follow the Windows prompts.
 4. Windows may display a reputation or security warning because the installer is not publicly trusted-signed.
-5. If desired, verify the public ZIP SHA-256 published in the release notes and the embedded installer SHA-256 above.
+5. If desired, verify the Windows ZIP and embedded installer SHA-256 values published above and on the release page.
 6. Launch RangeScout from the Start menu or desktop shortcut, then add optional provider credentials under **Settings → Data Providers**.
 
 > [!NOTE]
@@ -411,6 +421,7 @@ RangeScout application source is MIT licensed. Bundled third-party components re
 - [Official website](https://www.dietrichailabs.com/)
 - [Product page](https://www.dietrichailabs.com/rangescout.html)
 - [Download center](https://www.dietrichailabs.com/downloads.html)
+- [RangeScout 1.6.3 release](https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.3)
 - Support: [dietrichailabs@gmail.com](mailto:dietrichailabs@gmail.com)
 
 DietrichAILabs.com is the official product, download, documentation, checksum, release-information, status, and guides hub. GitHub provides source repositories, issues, development history, and release mirrors where applicable.
