@@ -312,8 +312,8 @@ def build_release_set(
     source_root = source_root.resolve()
     output_dir = output_dir.resolve()
     work_dir = work_dir.resolve()
-    if PRODUCT.version != "1.6.2" or not PRODUCT.build_identity.startswith("rs-v1.6.2-"):
-        raise RuntimeError("RangeScout 1.6.2 release engineering requires an immutable 1.6.2 build identity")
+    if PRODUCT.version != "1.6.3" or not PRODUCT.build_identity.startswith("rs-v1.6.3-"):
+        raise RuntimeError("RangeScout 1.6.3 release engineering requires an immutable 1.6.3 build identity")
     configure_reproducible_build_environment(source_root)
     if output_dir.exists() and any(output_dir.iterdir()):
         raise RuntimeError(f"output directory must be empty: {output_dir}")
@@ -384,7 +384,7 @@ def build_release_set(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build the RangeScout 1.6.2 internal QA artifact set.")
+    parser = argparse.ArgumentParser(description="Build the RangeScout 1.6.3 internal QA artifact set.")
     parser.add_argument("--source", default=str(REPO_ROOT))
     parser.add_argument("--output", required=True)
     parser.add_argument("--work", required=True)

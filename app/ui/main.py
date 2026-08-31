@@ -13,7 +13,7 @@ from time import perf_counter
 from typing import Any
 
 from app.application.bootstrap import RangeScoutApplication
-from app.application.active_symbol import ActiveSymbolController, ActiveSymbolState, SymbolRequest
+from app.application.active_symbol import ActiveSymbolController, ActiveSymbolState, SymbolRequest, normalize_symbol
 from app.application.local_snapshot import LocalCompanyIdentity, LocalSymbolSnapshot
 from app.historical_store.repository import HistoricalStore
 from app.application.local_data import delete_local_data, LocalDataDeletionReport
@@ -1586,9 +1586,9 @@ class RangeScoutWindow:
         hero_top.addWidget(self.market_cap_text, 2)
         actions = QVBoxLayout()
         quick_actions = QHBoxLayout()
-        for label, index in (("+ Watchlist", 3), ("Compare", 2), ("Alerts", 5), ("Notes", 6)):
+        for label, index in (("Add to Watchlist", 3), ("Compare", 2), ("Alerts", 5), ("Notes", 6)):
             action = QPushButton(label)
-            if label == "+ Watchlist":
+            if label == "Add to Watchlist":
                 self.market_watchlist_button = action
                 action.clicked.connect(self._on_add_active_symbol_to_watchlist)
             else:
@@ -2716,7 +2716,7 @@ class RangeScoutWindow:
 
         about_card, about_layout = self._card("About", "Product, publisher, release identity, and licensing")
         about_grid = QGridLayout()
-        about_grid.addWidget(QLabel("RangeScout 1.6.2"), 0, 0); about_grid.addWidget(QLabel("Dietrich AI Labs"), 0, 1)
+        about_grid.addWidget(QLabel("RangeScout 1.6.3"), 0, 0); about_grid.addWidget(QLabel("Dietrich AI Labs"), 0, 1)
         about_grid.addWidget(QLabel("Market analysis workstation • no trade execution"), 1, 0)
         about_grid.addWidget(QLabel("AUTHENTICODE SIGNING PENDING CERTIFICATE"), 1, 1)
         about_grid.addWidget(QLabel("Qt/PySide license and corresponding-source details ship with the application."), 2, 0, 1, 2)
@@ -2736,7 +2736,7 @@ class RangeScoutWindow:
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(10)
-        layout.addWidget(self._surface_heading("Settings", "RangeScout 1.6.2 preferences, privacy, and local-data controls"))
+        layout.addWidget(self._surface_heading("Settings", "RangeScout 1.6.3 preferences, privacy, and local-data controls"))
 
         grid = QGridLayout()
         grid.setSpacing(10)
@@ -3213,6 +3213,7 @@ class RangeScoutWindow:
                 self.note_editor_mode.setText("Unsaved edits — save or discard before changing note context")
             else:
                 self._on_reload_notes()
+        self._update_watchlist_quick_add_state()
         self._refresh_peer_symbols()
         self._performance_timings["identity_switch_ms"] = (perf_counter() - switch_began) * 1000.0
         if self._auto_network_refresh and hasattr(self, "runtime"):
@@ -5091,12 +5092,20 @@ class RangeScoutWindow:
     def _refresh_watchlists_widget(self) -> None:
         if not hasattr(self, "watchlist_widget"):
             return
+        self.watchlist_widget.blockSignals(True)
         self.watchlist_widget.clear()
         records = list(self.watchlist_store.list())
-        self._ticker_watchlist_title = records[0].title if records else "My Watchlist"
         self._ticker_watchlist_symbols = [symbol for record in records for symbol in record.symbols]
         if not records:
+            self._ticker_watchlist_title = "My Watchlist"
             self.watchlist_widget.addItem("No watchlists yet. Create one to get started.")
+            self.watchlist_widget.blockSignals(False)
+            if self.app.settings.selected_watchlist:
+                self.app.settings = replace(self.app.settings, selected_watchlist="")
+                self.app.persist_settings()
+            self.watchlist_id_input.clear()
+            self.watchlist_title_input.clear()
+            self.watchlist_symbol_input.clear()
             if hasattr(self, "watchlist_symbol_table"):
                 self.watchlist_symbol_table.setRowCount(0)
             if hasattr(self, "market_related_list"):
@@ -5105,11 +5114,22 @@ class RangeScoutWindow:
             self._refresh_ticker_ribbon()
             if hasattr(self, "runtime"):
                 self.runtime.set_symbols(self.current_symbol, [])
+            if hasattr(self, "_render_scanner_rows"):
+                self._render_scanner_rows()
+            self._update_watchlist_quick_add_state()
             return
         for record in records:
             self.watchlist_widget.addItem(f"{record.id} | {record.title} | {', '.join(record.symbols)}")
-        selected_id = self.watchlist_id_input.text().strip() if hasattr(self, "watchlist_id_input") else ""
-        selected = next((record for record in records if record.id == selected_id), records[0])
+        selected = self._selected_watchlist_record(persist_fallback=True)
+        if selected is None:
+            self.watchlist_widget.blockSignals(False)
+            return
+        selected_row = next(index for index, record in enumerate(records) if record.id == selected.id)
+        self.watchlist_widget.setCurrentRow(selected_row)
+        self.watchlist_widget.blockSignals(False)
+        self.watchlist_id_input.setText(selected.id)
+        self.watchlist_title_input.setText(selected.title)
+        self._ticker_watchlist_title = selected.title
         if hasattr(self, "watchlist_symbol_table"):
             self.watchlist_symbol_table.setRowCount(0)
             for symbol in selected.symbols:
@@ -5134,6 +5154,62 @@ class RangeScoutWindow:
         self._refresh_ticker_ribbon()
         if hasattr(self, "runtime"):
             self.runtime.set_symbols(self.current_symbol, self._watchlist_symbols())
+        if hasattr(self, "_render_scanner_rows"):
+            self._render_scanner_rows()
+        self._update_watchlist_quick_add_state()
+
+    def _selected_watchlist_record(self, *, persist_fallback: bool = False):
+        records = list(self.watchlist_store.list())
+        if not records:
+            return None
+        selected_id = self.app.settings.selected_watchlist
+        record = next((item for item in records if item.id == selected_id), None)
+        if record is None:
+            record = records[0]
+            if persist_fallback:
+                self.app.settings = replace(self.app.settings, selected_watchlist=record.id)
+                self.app.persist_settings()
+        return record
+
+    def _persist_selected_watchlist(self, watchlist_id: str) -> None:
+        if self.app.settings.selected_watchlist == watchlist_id:
+            return
+        self.app.settings = replace(self.app.settings, selected_watchlist=watchlist_id)
+        self.app.persist_settings()
+
+    def _watchlist_warning(self, message: str) -> None:
+        if hasattr(self, "result_text"):
+            self.result_text.setText(message)
+        if QMessageBox is not None:
+            QMessageBox.warning(self._qt_window, "Watchlist", message)
+
+    def _normalized_watchlist_symbol(self) -> str | None:
+        raw = self.watchlist_symbol_input.text()
+        try:
+            return normalize_symbol(raw)
+        except ValueError as exc:
+            self._watchlist_warning(f"Enter one valid symbol. {exc}")
+            return None
+
+    def _update_watchlist_quick_add_state(self) -> None:
+        if not hasattr(self, "market_watchlist_button"):
+            return
+        record = self._selected_watchlist_record()
+        watched = bool(record is not None and self.current_symbol in record.symbols)
+        self.market_watchlist_button.setText("✓ Watchlisted" if watched else "Add to Watchlist")
+        self.market_watchlist_button.setProperty("watchlisted", watched)
+        if record is None:
+            self.market_watchlist_button.setToolTip(
+                f"Create My Watchlist and add {self.current_symbol}"
+            )
+        elif watched:
+            self.market_watchlist_button.setToolTip(
+                f"{self.current_symbol} is already in {record.title}"
+            )
+        else:
+            self.market_watchlist_button.setToolTip(
+                f"Add {self.current_symbol} to {record.title}"
+            )
 
     def _refresh_ticker_ribbon(self) -> None:
         if hasattr(self, "runtime"):
@@ -5267,64 +5343,94 @@ class RangeScoutWindow:
         watchlist_id = self.watchlist_id_input.text().strip()
         title = self.watchlist_title_input.text().strip() or watchlist_id
         if not watchlist_id:
+            self._watchlist_warning("Enter a watchlist ID before creating or saving a watchlist.")
             return
         try:
-            self.watchlist_store.create(watchlist_id, title)
+            record = self.watchlist_store.create(watchlist_id, title)
         except Exception as exc:
             existing = next((item for item in self.watchlist_store.list() if item.id == watchlist_id), None)
             if existing is None:
-                if QMessageBox is not None:
-                    QMessageBox.warning(self._qt_window, "Watchlist", str(exc))
+                self._watchlist_warning(str(exc))
                 return
             existing.title = title  # type: ignore[attr-defined]
             self.watchlist_store._save()
+            record = existing
+        self._persist_selected_watchlist(record.id)
         self._refresh_watchlists_widget()
 
     def _on_watchlist_delete(self) -> None:
         watchlist_id = self.watchlist_id_input.text().strip()
         if not watchlist_id:
+            self._watchlist_warning("Select a watchlist before deleting it.")
             return
         try:
             self.watchlist_store.delete(watchlist_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            self._watchlist_warning(str(exc))
+            return
+        if self.app.settings.selected_watchlist == watchlist_id:
+            self.app.settings = replace(self.app.settings, selected_watchlist="")
+            self.app.persist_settings()
         self._refresh_watchlists_widget()
 
     def _on_watchlist_add_symbol(self) -> None:
-        watchlist_id = self.watchlist_id_input.text().strip()
-        symbol = self.watchlist_symbol_input.text().strip().upper()
-        if not watchlist_id or not symbol:
+        record = self._selected_watchlist_record()
+        if record is None:
+            self._watchlist_warning("Create or select a watchlist before adding a symbol.")
             return
-        self.watchlist_store.add_symbol(watchlist_id, symbol)
-        self._refresh_watchlists_widget()
+        symbol = self._normalized_watchlist_symbol()
+        if symbol is None:
+            return
+        try:
+            self.watchlist_store.add_symbol(record.id, symbol)
+        except Exception as exc:
+            self._watchlist_warning(str(exc))
+            return
+        self._persist_selected_watchlist(record.id)
         self.watchlist_symbol_input.clear()
-        self._refresh_ticker_ribbon()
+        self._refresh_watchlists_widget()
 
     def _on_add_active_symbol_to_watchlist(self) -> None:
-        records = self.watchlist_store.list()
-        selected_id = self.app.settings.selected_watchlist
-        record = next((item for item in records if item.id == selected_id), records[0] if records else None)
+        record = self._selected_watchlist_record(persist_fallback=True)
         if record is None:
-            record = self.watchlist_store.create("my-watchlist", "My Watchlist")
+            try:
+                record = self.watchlist_store.create("my-watchlist", "My Watchlist")
+            except Exception as exc:
+                self._watchlist_warning(str(exc))
+                return
+        try:
+            symbol = normalize_symbol(self.current_symbol)
+        except ValueError as exc:
+            self._watchlist_warning(str(exc))
+            return
         already = self.current_symbol in record.symbols
-        self.watchlist_store.add_symbol(record.id, self.current_symbol)
-        self.app.settings = replace(self.app.settings, selected_watchlist=record.id)
-        self.app.persist_settings()
+        try:
+            self.watchlist_store.add_symbol(record.id, symbol)
+        except Exception as exc:
+            self._watchlist_warning(str(exc))
+            return
+        self._persist_selected_watchlist(record.id)
         self._refresh_watchlists_widget()
-        self._refresh_ticker_ribbon()
         if hasattr(self, "market_watchlist_button"):
-            self.market_watchlist_button.setText("✓ Watchlisted")
-            self.market_watchlist_button.setChecked(True)
             self.market_watchlist_button.setToolTip(
-                f"{self.current_symbol} is already in {record.title}" if already else f"Added {self.current_symbol} to {record.title}"
+                f"{symbol} is already in {record.title}" if already else f"Added {symbol} to {record.title}"
             )
 
     def _on_watchlist_remove_symbol(self) -> None:
-        watchlist_id = self.watchlist_id_input.text().strip()
-        symbol = self.watchlist_symbol_input.text().strip().upper()
-        if not watchlist_id or not symbol:
+        record = self._selected_watchlist_record()
+        if record is None:
+            self._watchlist_warning("Create or select a watchlist before removing a symbol.")
             return
-        self.watchlist_store.remove_symbol(watchlist_id, symbol)
+        symbol = self._normalized_watchlist_symbol()
+        if symbol is None:
+            return
+        try:
+            self.watchlist_store.remove_symbol(record.id, symbol)
+        except Exception as exc:
+            self._watchlist_warning(str(exc))
+            return
+        self._persist_selected_watchlist(record.id)
+        self.watchlist_symbol_input.clear()
         self._refresh_watchlists_widget()
 
     def _on_watchlist_select(self) -> None:
@@ -5336,17 +5442,13 @@ class RangeScoutWindow:
         watchlist_id = text.split("|", 1)[0].strip()
         record = next((item for item in self.watchlist_store.list() if item.id == watchlist_id), None)
         if record is None:
+            self._watchlist_warning("Select a valid watchlist.")
             return
+        self._persist_selected_watchlist(record.id)
         self.watchlist_id_input.setText(record.id)
         self.watchlist_title_input.setText(record.title)
-        self.watchlist_symbol_input.setText(", ".join(record.symbols))
-        if hasattr(self, "watchlist_symbol_table"):
-            self.watchlist_symbol_table.setRowCount(0)
-            for symbol in record.symbols:
-                row = self.watchlist_symbol_table.rowCount()
-                self.watchlist_symbol_table.insertRow(row)
-                for column, value in enumerate((symbol, "N/A", "N/A", "N/A", "Watched", "N/A")):
-                    self.watchlist_symbol_table.setItem(row, column, QTableWidgetItem(value))
+        self.watchlist_symbol_input.clear()
+        self._refresh_watchlists_widget()
 
     def _on_watchlist_activate(self, item: QListWidgetItem) -> None:
         watchlist_id = item.text().split("|", 1)[0].strip()

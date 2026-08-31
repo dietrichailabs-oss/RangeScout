@@ -7,8 +7,8 @@ from dataclasses import dataclass
 class ProductIdentity:
     name: str = "RangeScout"
     company: str = "Dietrich AI Labs"
-    version: str = "1.6.2"
-    build_identity: str = "rs-v1.6.2-sec-best-alignment-r18"
+    version: str = "1.6.3"
+    build_identity: str = "rs-v1.6.3-watchlist-hotfix-eng1"
     publisher: str = "Dietrich AI Labs"
 
 
