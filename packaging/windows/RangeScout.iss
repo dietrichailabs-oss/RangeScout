@@ -5,16 +5,16 @@
   #error OutputDir must point to the public release output directory.
 #endif
 #ifndef AppVersion
-  #define AppVersion "1.6.3"
+  #define AppVersion "1.6.4"
 #endif
 #ifndef AppPublisher
   #define AppPublisher "Dietrich AI Labs"
 #endif
 #ifndef BuildIdentity
-  #define BuildIdentity "rs-v1.6.3-watchlist-hotfix-eng1"
+  #define BuildIdentity "rs-v1.6.4-qt-runtime-hotfix-eng1"
 #endif
 #ifndef SetupBaseFilename
-  #define SetupBaseFilename "RangeScout_1.6.3_Setup"
+  #define SetupBaseFilename "RangeScout_1.6.4_Setup"
 #endif
 #ifndef AppIcon
   #error AppIcon must point to the frozen RangeScout icon.

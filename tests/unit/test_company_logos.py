@@ -424,7 +424,7 @@ def test_ui_source_wires_logo_to_market_research_and_settings() -> None:
     assert "_request_company_logo" in source
     assert "Logo.dev publishable key" in source
     assert 'provider_configuration.save_credentials("logo_dev"' in source
-    assert "RangeScout 1.6.3" in source
+    assert "RangeScout 1.6.4" in source
     assert "RangeScout 1.3.0" not in source
 
 

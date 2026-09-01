@@ -787,7 +787,7 @@ class OfficialNasdaqDirectorySource:
     def _download(url: str) -> str:
         request = Request(
             url,
-            headers={"User-Agent": "RangeScout/1.6.3 (Dietrich AI Labs; official-directory discovery)"},
+            headers={"User-Agent": "RangeScout/1.6.4 (Dietrich AI Labs; official-directory discovery)"},
             method="GET",
         )
         try:

@@ -20,6 +20,7 @@ SOURCE_ALLOWLIST = {
     f"RELEASE_NOTES_v{PRODUCT.version}.md",
     "LICENSE",
     "pyproject.toml",
+    "requirements-release-windows.txt",
 }
 
 RELEASE_ALLOWLIST = {
@@ -30,6 +31,7 @@ RELEASE_ALLOWLIST = {
     f"RELEASE_NOTES_v{PRODUCT.version}.md",
     "LICENSE",
     "pyproject.toml",
+    "requirements-release-windows.txt",
 }
 
 EXCLUDE_DIR_NAMES = {

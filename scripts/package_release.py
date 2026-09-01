@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import ssl
+import struct
 import subprocess
 import sys
 import traceback
@@ -44,6 +45,17 @@ MANIFEST_ENTRY_EXCLUSIONS = {
     MANIFEST_VERIFIER_NAME,
     MANIFEST_DETAILS_NAME,
 }
+RELEASE_PYTHON = (3, 14, 6)
+RELEASE_DISTRIBUTIONS = {
+    "PySide6": "6.11.1",
+    "PySide6-Addons": "6.11.1",
+    "PySide6-Essentials": "6.11.1",
+    "shiboken6": "6.11.1",
+    "PyInstaller": "6.21.0",
+    "pyinstaller-hooks-contrib": "2026.6",
+}
+PROHIBITED_QT_SHADOW_LIBRARIES = ("icuuc.dll",)
+PE_MACHINE_AMD64 = 0x8664
 
 
 def _is_windows_pe_executable(path: Path) -> bool:
@@ -53,6 +65,201 @@ def _is_windows_pe_executable(path: Path) -> bool:
         return header == b"MZ"
     except OSError:
         return False
+
+
+def _assert_pinned_release_environment() -> dict[str, object]:
+    actual_python = tuple(sys.version_info[:3])
+    if actual_python != RELEASE_PYTHON:
+        raise RuntimeError(
+            f"Windows release build requires CPython {'.'.join(map(str, RELEASE_PYTHON))} "
+            f"x64, found {'.'.join(map(str, actual_python))}."
+        )
+    if struct.calcsize("P") != 8:
+        raise RuntimeError("Windows release build requires a 64-bit Python interpreter.")
+    versions: dict[str, str] = {}
+    for distribution, expected in RELEASE_DISTRIBUTIONS.items():
+        try:
+            actual = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise RuntimeError(f"Missing pinned release dependency: {distribution}=={expected}") from exc
+        if actual != expected:
+            raise RuntimeError(
+                f"Release dependency mismatch: {distribution}=={actual}; expected {expected}."
+            )
+        versions[distribution] = actual
+    return {
+        "python": ".".join(map(str, actual_python)),
+        "architecture": "x64",
+        "distributions": versions,
+    }
+
+
+def _pe_machine(path: Path) -> int:
+    with path.open("rb") as handle:
+        if handle.read(2) != b"MZ":
+            raise RuntimeError(f"Not a Windows PE file: {path}")
+        handle.seek(0x3C)
+        pe_offset = struct.unpack("<I", handle.read(4))[0]
+        handle.seek(pe_offset)
+        if handle.read(4) != b"PE\0\0":
+            raise RuntimeError(f"Invalid Windows PE signature: {path}")
+        return struct.unpack("<H", handle.read(2))[0]
+
+
+def _windows_file_version(path: Path) -> str:
+    environment = os.environ.copy()
+    environment["RANGESCOUT_AUDIT_FILE"] = str(path)
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-Item -LiteralPath $env:RANGESCOUT_AUDIT_FILE).VersionInfo.FileVersion",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+    return completed.stdout.strip()
+
+
+def _remove_prohibited_qt_shadow_libraries(runtime_root: Path) -> dict[str, object]:
+    removed: list[dict[str, object]] = []
+    for name in PROHIBITED_QT_SHADOW_LIBRARIES:
+        for path in sorted(runtime_root.rglob(name)):
+            if not path.is_file():
+                continue
+            removed.append(
+                {
+                    "path": path.relative_to(runtime_root).as_posix(),
+                    "size": path.stat().st_size,
+                    "sha256": _file_sha256(path),
+                    "file_version": _windows_file_version(path),
+                    "reason": "shadows the Windows ICU compatibility DLL required by Qt6Core",
+                }
+            )
+            path.unlink()
+    remaining = sorted(
+        path.relative_to(runtime_root).as_posix()
+        for name in PROHIBITED_QT_SHADOW_LIBRARIES
+        for path in runtime_root.rglob(name)
+        if path.is_file()
+    )
+    if remaining:
+        raise RuntimeError(f"Prohibited Qt shadow libraries remain: {remaining}")
+    if not removed:
+        raise RuntimeError(
+            "Expected PyInstaller ICU shadow library was not observed; dependency collection changed."
+        )
+    return {"removed": removed, "remaining": remaining}
+
+def _critical_qt_runtime_files(runtime_root: Path) -> list[Path]:
+    internal = runtime_root / "_internal"
+    candidates = [
+        runtime_root / "RangeScout.exe",
+        internal / "PySide6" / "Qt6Core.dll",
+        internal / "PySide6" / "Qt6Gui.dll",
+        internal / "PySide6" / "Qt6Widgets.dll",
+        internal / "PySide6" / "Qt6Network.dll",
+        internal / "PySide6" / "Qt6WebSockets.dll",
+        internal / "PySide6" / "plugins" / "platforms" / "qwindows.dll",
+    ]
+    candidates.extend(sorted((internal / "PySide6").glob("QtCore*.pyd")))
+    candidates.extend(sorted((internal / "shiboken6").glob("Shiboken*.pyd")))
+    candidates.extend(sorted(internal.glob("python*.dll")))
+    missing = [str(path.relative_to(runtime_root)) for path in candidates if not path.is_file()]
+    if missing:
+        raise RuntimeError("Critical packaged Qt/Python runtime file missing: " + ", ".join(missing))
+    return candidates
+
+
+def _run_packaged_qt_smoke(runtime_root: Path) -> dict[str, object]:
+    profile = runtime_root.parent / "_qt_runtime_smoke_profile"
+    _safe_remove(profile)
+    (profile / "AppData" / "Roaming").mkdir(parents=True)
+    (profile / "AppData" / "Local").mkdir(parents=True)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "APPDATA": str(profile / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(profile / "AppData" / "Local"),
+            "QT_QPA_PLATFORM": "offscreen",
+            "RANGESCOUT_AUTO_CLOSE_SECONDS": "2",
+            "RANGESCOUT_AUTOMATION_EXIT_ON_CLOSE": "1",
+        }
+    )
+    completed = subprocess.run(
+        [str(runtime_root / "RangeScout.exe")],
+        cwd=str(runtime_root),
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=45,
+        check=False,
+    )
+    result = {
+        "exit_code": completed.returncode,
+        "qtcore": "imported during packaged startup",
+        "qtwidgets": "imported during packaged startup",
+        "qtwebsockets": "imported through app.streaming.qt_transport",
+        "pass": completed.returncode == 0,
+    }
+    _safe_remove(profile)
+    if not result["pass"]:
+        raise RuntimeError(
+            f"Packaged Qt import/launch smoke failed with exit code {completed.returncode}: "
+            f"{completed.stderr[-1000:]}"
+        )
+    return result
+
+
+def _write_qt_runtime_audit(
+    runtime_root: Path,
+    *,
+    environment: dict[str, object],
+    shadow_libraries: dict[str, object],
+    smoke: dict[str, object],
+) -> Path:
+    critical_rows: list[dict[str, object]] = []
+    for path in _critical_qt_runtime_files(runtime_root):
+        machine = _pe_machine(path)
+        if machine != PE_MACHINE_AMD64:
+            raise RuntimeError(
+                f"Non-x64 packaged runtime component: {path} machine=0x{machine:04x}"
+            )
+        critical_rows.append(
+            {
+                "path": path.relative_to(runtime_root).as_posix(),
+                "size": path.stat().st_size,
+                "sha256": _file_sha256(path),
+                "file_version": _windows_file_version(path),
+                "pe_machine": "AMD64",
+            }
+        )
+    qt6core = sorted(path.relative_to(runtime_root).as_posix() for path in runtime_root.rglob("Qt6Core.dll"))
+    qtcore_pyd = sorted(path.relative_to(runtime_root).as_posix() for path in runtime_root.rglob("QtCore*.pyd"))
+    if qt6core != ["_internal/PySide6/Qt6Core.dll"]:
+        raise RuntimeError(f"Duplicate/conflicting Qt6Core runtime: {qt6core}")
+    if len(qtcore_pyd) != 1 or not qtcore_pyd[0].startswith("_internal/PySide6/"):
+        raise RuntimeError(f"Duplicate/conflicting QtCore extension: {qtcore_pyd}")
+    payload = {
+        "schema": "rangescout.qt-runtime-audit.v1",
+        "status": "PASS",
+        "version": PRODUCT.version,
+        "build_identity": PRODUCT.build_identity,
+        "build_environment": environment,
+        "shadow_library_removal": shadow_libraries,
+        "critical_runtime": critical_rows,
+        "qt6core_locations": qt6core,
+        "qtcore_extension_locations": qtcore_pyd,
+        "packaged_import_smoke": smoke,
+    }
+    output = runtime_root / "notices" / "QT_RUNTIME_AUDIT.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return output
 
 
 def _build_timestamp(source_root: Path | None = None) -> str:
@@ -896,6 +1103,7 @@ def _windows_version_text() -> str:
 
 
 def _build_executable(staging_root: Path, output_root: Path) -> Path:
+    release_environment = _assert_pinned_release_environment()
     exe = output_root / "RangeScout.exe"
     staging_root = staging_root.resolve()
     output_root = output_root.resolve()
@@ -969,6 +1177,14 @@ def _build_executable(staging_root: Path, output_root: Path) -> Path:
     if not _is_windows_pe_executable(exe):
         raise RuntimeError("RangeScout.exe is not a valid Windows PE executable")
     _assert_clean_runtime_sources(output_root)
+    shadow_libraries = _remove_prohibited_qt_shadow_libraries(output_root)
+    smoke = _run_packaged_qt_smoke(output_root)
+    _write_qt_runtime_audit(
+        output_root,
+        environment=release_environment,
+        shadow_libraries=shadow_libraries,
+        smoke=smoke,
+    )
     return exe
 
 

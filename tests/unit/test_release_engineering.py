@@ -29,12 +29,13 @@ def _sha256(path: Path) -> str:
 
 
 def test_milestone_product_identity() -> None:
-    assert PRODUCT.version == "1.6.3"
-    assert PRODUCT.build_identity == "rs-v1.6.3-watchlist-hotfix-eng1"
+    assert PRODUCT.version == "1.6.4"
+    assert PRODUCT.build_identity == "rs-v1.6.4-qt-runtime-hotfix-eng1"
     assert PRODUCT.company == "Dietrich AI Labs"
     assert PRODUCT.publisher == "Dietrich AI Labs"
     assert "packaging" in SOURCE_ALLOWLIST
-    assert "RELEASE_NOTES_v1.6.3.md" in SOURCE_ALLOWLIST
+    assert "RELEASE_NOTES_v1.6.4.md" in SOURCE_ALLOWLIST
+    assert "requirements-release-windows.txt" in SOURCE_ALLOWLIST
     assert "RELEASE_NOTES_v1.1.0.md" not in SOURCE_ALLOWLIST
 
 
@@ -66,7 +67,7 @@ def test_windows_metadata_and_public_disclosure_use_dietrich_identity() -> None:
     root = Path(__file__).resolve().parents[2]
     version_text = _windows_version_text()
     assert "StringStruct('CompanyName', 'Dietrich AI Labs')" in version_text
-    assert "StringStruct('ProductVersion', '1.6.3')" in version_text
+    assert "StringStruct('ProductVersion', '1.6.4')" in version_text
     inno = (root / "packaging" / "windows" / "RangeScout.iss").read_text(encoding="utf-8")
     assert '#define AppPublisher "Dietrich AI Labs"' in inno
     readme = (root / "README.md").read_text(encoding="utf-8")

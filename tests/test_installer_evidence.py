@@ -8,10 +8,10 @@ from scripts.handoff.inno_installer_evidence import _accepted_display_name, _inn
 
 
 def test_inno_current_user_display_name_preserves_exact_product_and_version() -> None:
-    assert _accepted_display_name("RangeScout 1.6.3")
-    assert _accepted_display_name("RangeScout 1.6.3 (Current user)")
+    assert _accepted_display_name("RangeScout 1.6.4")
+    assert _accepted_display_name("RangeScout 1.6.4 (Current user)")
     assert not _accepted_display_name("RangeScout 1.2.0 (Current user)")
-    assert not _accepted_display_name("Other 1.6.3")
+    assert not _accepted_display_name("Other 1.6.4")
 
 
 def test_inno_default_target_matches_per_user_install_location(monkeypatch, tmp_path: Path) -> None:

@@ -2716,7 +2716,7 @@ class RangeScoutWindow:
 
         about_card, about_layout = self._card("About", "Product, publisher, release identity, and licensing")
         about_grid = QGridLayout()
-        about_grid.addWidget(QLabel("RangeScout 1.6.3"), 0, 0); about_grid.addWidget(QLabel("Dietrich AI Labs"), 0, 1)
+        about_grid.addWidget(QLabel("RangeScout 1.6.4"), 0, 0); about_grid.addWidget(QLabel("Dietrich AI Labs"), 0, 1)
         about_grid.addWidget(QLabel("Market analysis workstation • no trade execution"), 1, 0)
         about_grid.addWidget(QLabel("AUTHENTICODE SIGNING PENDING CERTIFICATE"), 1, 1)
         about_grid.addWidget(QLabel("Qt/PySide license and corresponding-source details ship with the application."), 2, 0, 1, 2)
@@ -2736,7 +2736,7 @@ class RangeScoutWindow:
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(10)
-        layout.addWidget(self._surface_heading("Settings", "RangeScout 1.6.3 preferences, privacy, and local-data controls"))
+        layout.addWidget(self._surface_heading("Settings", "RangeScout 1.6.4 preferences, privacy, and local-data controls"))
 
         grid = QGridLayout()
         grid.setSpacing(10)

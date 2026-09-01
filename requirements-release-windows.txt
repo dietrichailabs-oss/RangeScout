@@ -1,0 +1,8 @@
+# RangeScout 1.6.4 Windows release lock.
+# Build with CPython 3.14.6 x64; scripts/package_release.py enforces it.
+PySide6==6.11.1
+PySide6-Addons==6.11.1
+PySide6-Essentials==6.11.1
+shiboken6==6.11.1
+PyInstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6

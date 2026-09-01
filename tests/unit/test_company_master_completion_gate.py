@@ -19,6 +19,13 @@ EXPECTED_SOURCES = {
 }
 
 
+def _source_snapshot_sha256(path: Path) -> str:
+    payload = path.read_bytes()
+    if path.suffix.lower() == ".txt" and b"\r\n" not in payload:
+        payload = payload.replace(b"\n", b"\r\n")
+    return sha256(payload).hexdigest().upper()
+
+
 def _master_connection() -> sqlite3.Connection:
     connection = sqlite3.connect(company_master_path())
     connection.row_factory = sqlite3.Row
@@ -36,7 +43,7 @@ def test_frozen_sources_and_broad_master_are_exact_and_auditable() -> None:
     for item in report["input_snapshots"]:
         source_path = Path("docs/engineering/v1.6/company_master_sources") / item["filename"]
         assert source_path.is_file()
-        assert sha256(source_path.read_bytes()).hexdigest().upper() == item["sha256"]
+        assert _source_snapshot_sha256(source_path) == item["sha256"]
 
 
 def test_master_has_broad_exchange_etf_and_outside_legacy_seed_coverage() -> None:

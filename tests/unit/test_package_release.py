@@ -67,6 +67,7 @@ class TestPackageRelease(unittest.TestCase):
             self.assertIn("notices/PRIVACY_AND_DATA_USE.md", manifest_files)
             self.assertIn("notices/QT_SOURCE_INSTRUCTIONS.md", manifest_files)
             self.assertIn("notices/QT_CORRESPONDING_SOURCE_ASSET_MANIFEST.json", manifest_files)
+            self.assertIn("notices/QT_RUNTIME_AUDIT.json", manifest_files)
             self.assertNotIn("SHA256SUMS.txt", manifest_files)
             self.assertNotIn("manifest.json", manifest_files)
             self.assertNotIn("manifest_details.json", manifest_files)
@@ -82,12 +83,27 @@ class TestPackageRelease(unittest.TestCase):
                 self.assertIn("notices/PRIVACY_AND_DATA_USE.md", names)
                 self.assertIn("notices/QT_SOURCE_INSTRUCTIONS.md", names)
                 self.assertIn("notices/QT_CORRESPONDING_SOURCE_ASSET_MANIFEST.json", names)
+                self.assertIn("notices/QT_RUNTIME_AUDIT.json", names)
                 self.assertIn("manifest.json", names)
                 self.assertEqual(_forbidden_qt_present(zip_path), [])
                 self.assertIn("_internal/PySide6/plugins/platforms/qwindows.dll", names)
 
                 source_manifest = json.loads(
                     archive.read("notices/QT_CORRESPONDING_SOURCE_ASSET_MANIFEST.json")
+                )
+                runtime_audit = json.loads(archive.read("notices/QT_RUNTIME_AUDIT.json"))
+                self.assertEqual(runtime_audit["status"], "PASS")
+                self.assertTrue(runtime_audit["packaged_import_smoke"]["pass"])
+                self.assertEqual(
+                    runtime_audit["build_environment"]["distributions"]["PySide6"],
+                    "6.11.1",
+                )
+                self.assertEqual(runtime_audit["qt6core_locations"], ["_internal/PySide6/Qt6Core.dll"])
+                self.assertEqual(runtime_audit["shadow_library_removal"]["remaining"], [])
+                self.assertNotIn("_internal/icuuc.dll", names)
+                self.assertEqual(
+                    runtime_audit["shadow_library_removal"]["removed"][0]["path"],
+                    "_internal/icuuc.dll",
                 )
                 sbom = json.loads(archive.read("notices/SBOM.json"))
                 mapped = {

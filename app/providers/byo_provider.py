@@ -117,7 +117,7 @@ class _CredentialedProvider:
     ) -> list[dict[str, Any]]:
         request = urllib.request.Request(
             url,
-            headers={"Accept": "application/json", "User-Agent": "RangeScout/1.6.3", **dict(headers)},
+            headers={"Accept": "application/json", "User-Agent": "RangeScout/1.6.4", **dict(headers)},
         )
         try:
             with urllib.request.urlopen(
