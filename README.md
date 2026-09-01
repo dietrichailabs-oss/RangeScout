@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest"><img alt="Latest Release" src="https://img.shields.io/github/v/release/dietrichailabs-oss/RangeScout?style=for-the-badge"></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.4"><img alt="Latest Release" src="https://img.shields.io/github/v/release/dietrichailabs-oss/RangeScout?style=for-the-badge"></a>
   <img alt="Windows" src="https://img.shields.io/badge/Windows-Desktop-0078D4?style=for-the-badge&logo=windows11&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.14-3776AB?style=for-the-badge&logo=python&logoColor=white">
   <img alt="Market Data" src="https://img.shields.io/badge/Market%20Data-Multi--Provider-0F766E?style=for-the-badge">
@@ -23,7 +23,7 @@
 > **RangeScout 1.6.4 is the current public Windows release.** It corrects a clean-Windows Qt startup failure while preserving the Independent-QA-passed RangeScout 1.6.3 watchlist reliability hotfix.
 
 <p align="center">
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.4_Windows.zip"><strong>⬇ Download RangeScout 1.6.4 for Windows</strong></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/download/v1.6.4/RangeScout_1.6.4_Windows.zip"><strong>⬇ Download RangeScout 1.6.4 for Windows</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
   <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.4"><strong>Release Notes</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
@@ -44,6 +44,8 @@ RangeScout 1.6.4 is a narrowly scoped Windows startup hotfix. It does not redesi
 
 ### RangeScout 1.6.4 release and QA identity
 
+- Public release: [RangeScout 1.6.4](https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.4)
+- Public Windows ZIP SHA-256: `B87775E0DB4B0C684930AE9011DB961EAA3643EC5F4D751FDF0B1D51E038F03F`
 - Engineering commit: `474fd4299813bf29e0206fc5990516ff49052898`
 - Engineering tree: `b2122885e1fc02f61001e9d6819d463fa0c4c303`
 - Build: `rs-v1.6.4-qt-runtime-hotfix-eng1`
@@ -295,9 +297,9 @@ The preserved 1.3 foundation includes:
 
 The recommended public download is RangeScout 1.6.4:
 
-**[RangeScout_1.6.4_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.4_Windows.zip)**
+**[RangeScout_1.6.4_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/download/v1.6.4/RangeScout_1.6.4_Windows.zip)**
 
-The exact Windows ZIP SHA-256 is published on the GitHub release page.
+**Windows ZIP SHA-256:** `B87775E0DB4B0C684930AE9011DB961EAA3643EC5F4D751FDF0B1D51E038F03F`
 
 **Embedded 1.6.4 installer SHA-256:** `32F3D0E6BBE825523DDA38F09E775B561528127DB7C6766EAF252328D5328624`
 
@@ -308,11 +310,11 @@ The ZIP contains:
 - `SIGNING_INFORMATION.md`
 - `SIGNING_VERIFICATION.txt`
 
-1. Download `RangeScout_1.6.4_Windows.zip` from the latest public release.
+1. Download `RangeScout_1.6.4_Windows.zip` from the [RangeScout 1.6.4 release](https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.4).
 2. Extract the ZIP.
 3. Run `RangeScout_1.6.4_Setup.exe` and follow the Windows prompts.
 4. Windows may display a reputation or security warning because the installer is not publicly trusted-signed.
-5. If desired, verify the Windows ZIP and embedded installer SHA-256 values published on the release page.
+5. If desired, verify the Windows ZIP and embedded installer SHA-256 values above or on the release page.
 6. Launch RangeScout from the Start menu or desktop shortcut, then add optional provider credentials under **Settings → Data Providers**.
 
 > [!NOTE]
