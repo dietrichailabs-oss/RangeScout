@@ -10,7 +10,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-2563EB?style=for-the-badge"></a>
 </p>
 
-<h1 align="center">RangeScout 1.6.3</h1>
+<h1 align="center">RangeScout 1.6.4</h1>
 
 <p align="center">
   <strong>A Windows market intelligence workstation from Dietrich AI Labs.</strong><br>
@@ -20,15 +20,36 @@
 <p align="center"><strong>Publisher/company: Dietrich AI Labs</strong></p>
 
 > [!NOTE]
-> **RangeScout 1.6.3 is the current public Windows release.** It includes the Independent-QA-passed watchlist reliability hotfix for selected-list targeting, single-symbol Add/Remove, Active Symbol quick-add, watched-state updates, and dependent ticker/runtime/scanner refresh behavior.
+> **RangeScout 1.6.4 is the current public Windows release.** It corrects a clean-Windows Qt startup failure while preserving the Independent-QA-passed RangeScout 1.6.3 watchlist reliability hotfix.
 
 <p align="center">
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.3_Windows.zip"><strong>⬇ Download RangeScout 1.6.3 for Windows</strong></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.4_Windows.zip"><strong>⬇ Download RangeScout 1.6.4 for Windows</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
-  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.3"><strong>Release Notes</strong></a>
+  <a href="https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.4"><strong>Release Notes</strong></a>
   &nbsp;&nbsp;•&nbsp;&nbsp;
   <a href="https://github.com/dietrichailabs-oss/RangeScout/issues"><strong>Report an Issue</strong></a>
 </p>
+
+---
+
+## What's new in RangeScout 1.6.4
+
+RangeScout 1.6.4 is a narrowly scoped Windows startup hotfix. It does not redesign application behavior or remove the watchlist improvements delivered in 1.6.3.
+
+- **Clean Windows startup corrected** — the packaged application now launches on a clean supported Windows installation and across the verified 1.6.3 → 1.6.4 installer upgrade path.
+- **ICU DLL shadowing removed** — PyInstaller had collected a package-local `icuuc.dll` that shadowed the Windows ICU compatibility DLL required by Qt, preventing `QtCore` from loading. The release pipeline now removes that prohibited shadow library and fails closed if it reappears.
+- **Release environment is reproducibly pinned** — the Windows release uses exact Python, Qt/PySide6, Shiboken, PyInstaller, and PyInstaller-hooks versions, with critical runtime identity and duplicate/conflict audits.
+- **Clean-install and upgrade paths are hardened** — packaging launches the frozen executable as a build gate, and the installer replaces the previous internal runtime tree so stale ICU files cannot survive an upgrade.
+- **RangeScout 1.6.3 watchlist fixes are preserved** — selected-watchlist targeting, single-symbol Add/Remove, Active Symbol quick-add, watched-state changes, and dependent ticker/runtime/scanner refresh behavior remain intact.
+
+### RangeScout 1.6.4 release and QA identity
+
+- Engineering commit: `474fd4299813bf29e0206fc5990516ff49052898`
+- Engineering tree: `b2122885e1fc02f61001e9d6819d463fa0c4c303`
+- Build: `rs-v1.6.4-qt-runtime-hotfix-eng1`
+- Independent QA commit: `aa9f895f832fa4c41e1f0604abba4b19efea6448`
+- Independent QA verdict: **PASS**
+- Tracking: [GitHub Issue #4](https://github.com/dietrichailabs-oss/RangeScout/issues/4)
 
 ---
 
@@ -272,26 +293,26 @@ The preserved 1.3 foundation includes:
 
 ## Download & install
 
-The recommended public download is RangeScout 1.6.3:
+The recommended public download is RangeScout 1.6.4:
 
-**[RangeScout_1.6.3_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.3_Windows.zip)**
+**[RangeScout_1.6.4_Windows.zip](https://github.com/dietrichailabs-oss/RangeScout/releases/latest/download/RangeScout_1.6.4_Windows.zip)**
 
-**Windows ZIP SHA-256:** `2417F8ECE087539DF3798742C1EB6BFFDEEEB543057715E0B0D92632BEE01F8E`
+The exact Windows ZIP SHA-256 is published on the GitHub release page.
 
-**Embedded 1.6.3 installer SHA-256:** `11271C0F14D22C732455E8C6B99DFC80539A6B11D7A7E8CAC54180653FD22FD7`
+**Embedded 1.6.4 installer SHA-256:** `32F3D0E6BBE825523DDA38F09E775B561528127DB7C6766EAF252328D5328624`
 
 The ZIP contains:
 
-- `RangeScout_1.6.3_Setup.exe`
+- `RangeScout_1.6.4_Setup.exe`
 - `README.md`
 - `SIGNING_INFORMATION.md`
 - `SIGNING_VERIFICATION.txt`
 
-1. Download `RangeScout_1.6.3_Windows.zip` from the latest public release.
+1. Download `RangeScout_1.6.4_Windows.zip` from the latest public release.
 2. Extract the ZIP.
-3. Run `RangeScout_1.6.3_Setup.exe` and follow the Windows prompts.
+3. Run `RangeScout_1.6.4_Setup.exe` and follow the Windows prompts.
 4. Windows may display a reputation or security warning because the installer is not publicly trusted-signed.
-5. If desired, verify the Windows ZIP and embedded installer SHA-256 values published above and on the release page.
+5. If desired, verify the Windows ZIP and embedded installer SHA-256 values published on the release page.
 6. Launch RangeScout from the Start menu or desktop shortcut, then add optional provider credentials under **Settings → Data Providers**.
 
 > [!NOTE]
@@ -421,7 +442,7 @@ RangeScout application source is MIT licensed. Bundled third-party components re
 - [Official website](https://www.dietrichailabs.com/)
 - [Product page](https://www.dietrichailabs.com/rangescout.html)
 - [Download center](https://www.dietrichailabs.com/downloads.html)
-- [RangeScout 1.6.3 release](https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.3)
+- [RangeScout 1.6.4 release](https://github.com/dietrichailabs-oss/RangeScout/releases/tag/v1.6.4)
 - Support: [dietrichailabs@gmail.com](mailto:dietrichailabs@gmail.com)
 
 DietrichAILabs.com is the official product, download, documentation, checksum, release-information, status, and guides hub. GitHub provides source repositories, issues, development history, and release mirrors where applicable.
