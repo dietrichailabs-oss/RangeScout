@@ -55,7 +55,7 @@ RangeScout 1.6.4 is a narrowly scoped Windows startup hotfix. It does not redesi
 
 ## What's new in RangeScout 1.6.3
 
-RangeScout 1.6.3 is a narrowly scoped post-release correction for watchlist selection and Active Symbol watchlist workflows. The exact Engineering candidate on `codex/v1.6.3-watchlist-hotfix` passed the scoped Independent QA gate and is now the current public release.
+RangeScout 1.6.3 is a narrowly scoped post-release correction for watchlist selection and Active Symbol watchlist workflows. The exact Engineering candidate on `codex/v1.6.3-watchlist-hotfix` passed the scoped Independent QA gate and was published as RangeScout 1.6.3. It is preserved below as prior release history.
 
 ### Watchlist selection and editing
 
